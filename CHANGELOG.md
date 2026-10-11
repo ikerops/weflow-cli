@@ -19,6 +19,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The 2D knowledge graph shows names again when you click a concept.** Focusing a node dims everything else and is
+  supposed to make "who is it connected to" visible - but the label pass only ever considered nodes *outside* the
+  highest-degree batch, so clicking a hub (in a small graph: clicking anything) drew **no names at all** while the
+  HUD showed one. It now labels the focused concept and its neighbours, ordered by degree so the same graph always
+  draws the same names. Found while splitting the two knowledge bases; the regression test asserts the focused name
+  and a neighbour's name are really drawn, and reverting the fix fails it with `(一个都没有)`.
+- **`search_knowledge` walks the neighbourhood in the line you asked for.** When both knowledge bases hold the same
+  concept name, the walk used to resolve every hop against the first directory that had the file - so the
+  conversation-line page was unreachable even though the answer you just got said the other line has one too. The
+  starting page now honours the line that matched, and each hop prefers its parent's line before falling back to the
+  other one (the same rule the graph uses: a page may legitimately link a concept that only exists on the other
+  line - 277 such links exist in this vault).
 - **Links that name a concept both knowledge bases have now say which one they mean.** With the two concept
   namespaces split, a bare `[[DeepSeek]]` in Obsidian resolves deterministically but not necessarily to the page you
   meant. Rather than moving the chat tree into a second vault, the fix keeps one vault and writes the line's path into

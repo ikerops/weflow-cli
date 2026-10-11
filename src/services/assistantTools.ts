@@ -11,7 +11,7 @@ import { frameLocalData } from './assistantMemory.js'
 import { disabledIds, readSkillBody, scanSkills, skillRoots, skillState } from './assistantSkills.js'
 import { privacyGate } from './assistantPrivacy.js'
 import { existsSync, readFileSync, readdirSync } from 'fs'
-import { basename, join } from 'path'
+import { basename, dirname, join } from 'path'
 // 直接调进程的写法已收敛进 pythonBridge：这里不再 import child_process
 import { resolvePackageRoot } from '../utils/packageRoot.js'
 import type { Contact } from '../types.js'
@@ -157,7 +157,7 @@ function relatedNames(pagePath: string): string[] {
  * - **没建页的邻居照旧报数**（`missing`），不静默吞掉。
  */
 export function conceptSubgraph(pageName: string, depth = 2, maxNodes = 30,
-                                wikiDirs: string[] = vaultDirs()): {
+                                wikiDirs: string[] = vaultDirs(), homeDir?: string): {
   levels: Array<Array<{ name: string; brief: string; via: string }>>
   truncated: boolean
   missing: number
@@ -166,15 +166,31 @@ export function conceptSubgraph(pageName: string, depth = 2, maxNodes = 30,
   if (typeof wikiDirs === 'string') {
     throw new TypeError('conceptSubgraph 的 wikiDirs 要的是目录数组，不是单个字符串')
   }
-  // 邻居可能住在另一个目录（文章概念指向聊天概念、反之亦然），所以查找跨目录
-  const find = (name: string): string | null => {
-    for (const dir of wikiDirs) {
+  // 邻居可能住在另一个目录（文章概念指向聊天概念、反之亦然），所以查找跨目录。
+  // `homeDir` 只影响**起点那一页**：两条线各有一张同名页时，"第一个有这个文件的目录"
+  // 永远选出文章线那张，于是聊天线那张根本走不到 —— 而调用方（`search_knowledge`）
+  // 正好知道这一趟命中的是哪条线。
+  const find = (name: string, from?: string): string | null => {
+    const dirs = from ? [from, ...wikiDirs.filter((d) => d !== from)] : wikiDirs
+    for (const dir of dirs) {
       const candidate = join(dir, safeConceptFile(name))
       if (existsSync(candidate)) return candidate
     }
     return null
   }
-  if (!find(pageName)) return { levels: [], truncated: false, missing: 0 }
+  // **这一趟在哪条线上**：起点由 `homeDir` 定，之后沿 BFS **往下继承** —— 与图谱那边
+  // "先在页自己那条线里解析、线里没有才回退到另一条"是**同一条规则**。不继承的话每一跳
+  // 都会重新按"第一个有这个文件的目录"选，于是聊天线那一支走着走着就窜到文章线去了。
+  const resolved = new Map<string, string>()
+  const resolve = (name: string, from?: string): string | null => {
+    const hit = resolved.get(name)
+    if (hit) return hit
+    const path = find(name, from)
+    if (path) resolved.set(name, path)
+    return path
+  }
+  const start = resolve(pageName, homeDir)
+  if (!start) return { levels: [], truncated: false, missing: 0 }
 
   const seen = new Set<string>([pageName])
   const levels: Array<Array<{ name: string; brief: string; via: string }>> = []
@@ -185,11 +201,12 @@ export function conceptSubgraph(pageName: string, depth = 2, maxNodes = 30,
     const level: Array<{ name: string; brief: string; via: string }> = []
     const next: string[] = []
     for (const from of frontier) {
-      const fromPath = find(from)
+      const fromPath = resolved.get(from) || resolve(from)
       if (!fromPath) continue
+      const home = dirname(fromPath)
       for (const name of relatedNames(fromPath)) {
         if (seen.has(name)) continue
-        const target = find(name)
+        const target = resolve(name, home)
         if (!target) {
           missing += 1
           continue
@@ -2052,7 +2069,9 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // **顺带把邻居给出去**（见 `conceptNeighbors`）：一次调用拿到"这个概念 + 连着它的一小块子图"。
         // 不点明"可以再用本工具查其中任意一个"的话，模型会把它当装饰性文字读过去。
         const depth = boundedToolInteger(args.depth, 1, 3, 'depth')
-        const { levels, truncated, missing } = conceptSubgraph(name, depth)
+        // **从命中的那一条线开始**（`hit.dir`）：同名概念两条线各一张，不指定起点的话
+        // 永远走文章线那张 —— 而上面刚刚才告诉模型"另一条线也有这个概念"
+        const { levels, truncated, missing } = conceptSubgraph(name, depth, 30, vaultDirs(), hit.dir)
         const out = [`「${name}」概念页（${hit.where}知识库）${alsoNote}:`, page.slice(0, 2000)]
         if (levels.length) {
           out.push('', depth > 1

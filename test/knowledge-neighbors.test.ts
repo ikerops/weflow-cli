@@ -173,6 +173,41 @@ test('起始页不存在时给空结果', () => {
     { levels: [], truncated: false, missing: 0 })
 })
 
+test('两条线各有一张同名页：`homeDir` 决定走哪一条，而且"这条线"沿 BFS 往下继承', () => {
+  // 两条线各有一张 `同名`，都连着 `共有`（两条线也都有，**定义不同**）；`第二跳` 只在文章线有，
+  // 用来钉"邻居真的缺了才算缺、不是一跨线就报缺"。
+  const wikiDir = vault({
+    '同名.md': page('同名', ['共有']),
+    '共有.md': page('共有', ['第二跳'], '文章线的共有。'),
+    '第二跳.md': page('第二跳', [], '第二跳。'),
+  })
+  const chatDir = vault({
+    '同名.md': page('同名', ['共有']),
+    // 聊天这张也连 `第二跳`，而 `第二跳` **只在文章线有** ⇒ 用来钉"本线没有就跨线取回来"
+    '共有.md': page('共有', ['第二跳'], '聊天线的共有。'),
+  })
+
+  const fromWiki = conceptSubgraph('同名', 2, 30, [wikiDir, chatDir], wikiDir)
+  assert.equal(fromWiki.levels[0][0].brief, '文章线的共有。')
+  assert.deepEqual(fromWiki.levels[1].map(x => x.name), ['第二跳'])
+  assert.equal(fromWiki.missing, 0)
+
+  // **起点按 `homeDir` 走，之后按"本线优先"往下继承**：两条线都有 `共有` 时，
+  // 从聊天线出发必须拿到聊天线那张（不继承的话每一步都重新按"第一个有这个文件的目录"选，
+  // 走着走着就窜到文章线去了 —— 这正是这条断言盯的）
+  const fromChat = conceptSubgraph('同名', 2, 30, [wikiDir, chatDir], chatDir)
+  assert.equal(fromChat.levels[0][0].brief, '聊天线的共有。',
+    '同名时该拿本线那张，不是文章线那张')
+  // **而本线没有的邻居照旧跨线取回来**（这是有意的：聊天页会链到只存在于文章线的概念，
+  // 实测有 277 条这样的链接）。所以"第二跳"仍在，只是它来自文章线。
+  assert.deepEqual(fromChat.levels[1].map(x => x.name), ['第二跳'],
+    '邻居只在另一条线有页时该取回来，而不是报成缺页')
+  assert.equal(fromChat.missing, 0)
+
+  rmSync(wikiDir, { recursive: true, force: true })
+  rmSync(chatDir, { recursive: true, force: true })
+})
+
 test('传字符串照样抛（同 conceptNeighbors）', () => {
   assert.throws(() => conceptSubgraph('甲', 2, 30, 'x' as unknown as string[]), /数组/)
 })

@@ -257,11 +257,27 @@
     const extra = []
     if (hovered >= 0 && !labelledSet.has(hovered)) extra.push(hovered)
     if (focus >= 0 && focus !== hovered && !labelledSet.has(focus)) extra.push(focus)
+    // **聚焦时的候选换成"它自己 + 它连着的那些"**：其余点都压暗了，给它们画名字只会糊住
+    // 中间那个。邻居按度数从高到低（`LABEL_MAX` 截断时先给连接多的），所以同一张图每次
+    // 画出来的名字是一样的。
+    //
+    // 这里原来写的是"聚焦就只画 `extra`"，而 `extra` 只装**不在度数最高那批里的**点 ——
+    // 于是点开一个枢纽（小图里就是点开任何一个点）画布上**一个名字都没有**，正好与上面
+    // "一眼看得出它连的是谁"相反（2026-10-11 修）。
+    const focusLabels = []
+    if (dimOthers) {
+      focusLabels.push(focus)
+      if (neighbours) {
+        for (const j of [...neighbours].sort((a, b) => (nodes[b].deg || 0) - (nodes[a].deg || 0))) {
+          focusLabels.push(j)
+        }
+      }
+    }
     // **互相压住的名字谁也别画**（贪心避让）：度数最高的那批全是枢纽，它们本来就挤在中心，
     // 早先那版把它们全画出来，正中间是一团白字，等于没有标签。鼠标指着/点开的那两个永远画。
     const placed = []
     let shownLabels = 0
-    for (const i of dimOthers ? extra : labelled.concat(extra)) {
+    for (const i of dimOthers ? focusLabels.concat(extra) : labelled.concat(extra)) {
       const sx = ox + X[i] * s
       const sy = oy + Y[i] * s
       if (sx < -40 || sy < -20 || sx > w + 40 || sy > h + 20) continue
