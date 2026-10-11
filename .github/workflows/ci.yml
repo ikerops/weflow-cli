@@ -46,10 +46,12 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
-      # 只装这两个: 用例在方法内部 import zstandard / Crypto(pycryptodome),
-      # 而 requirements.txt 的其余部分(sqlcipher3 要编译、pymem 仅 Windows)
-      # 对这两个测试文件都不是必需的。
-      - run: python -m pip install --quiet zstandard pycryptodome
+      # 装测试真正 import 的那些。这份清单曾经是 "zstandard + pycryptodome" 两个, 并写着
+      # "requirements.txt 其余部分对这两个测试文件都不是必需的" —— 那句话随用例增长过期了:
+      # `backfill_articles_test` / `bonds_test` 现在 import sqlcipher3, `knowledge_line_scope_test`
+      # import numpy, 两者都在 requirements.txt 里。缺了它们不是"跳过"而是整批 collection error,
+      # 所以这里必须装齐(用 sqlcipher3-binary: 预编译 wheel, 不必就地编 OpenSSL)。
+      - run: python -m pip install --quiet zstandard pycryptodome numpy sqlcipher3-binary
       - run: python -m unittest discover -s test -p '*_test.py' -v
 
   # 发布前的一致性校验: 版本号、锁文件、npm 包内容
