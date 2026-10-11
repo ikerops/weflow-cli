@@ -7327,11 +7327,17 @@ program
     const client = await detectWechatClient()
     // 客户端自报的数据目录 vs 配置里那个数据库推出来的根：**只比是不是同一份**，
     // 路径本身不进机器可读输出（`wechat-check/v1` 一直是不含路径的）。
+    //
+    // **只在 4.x 上比**：这个根是从 `ntDbPath`（4.x 的库）推的，而客户端自报的那条来自 4.x 客户端
+    // —— 只用 3.x 的用户（`dbPath3x`）比出来的"不是同一份"没有意义，而这句话**只在 false 时打印**
+    // ⇒ 那就是一条假警告。判据不成立时给 null（"不知道"），不是 false。
     const { dirname } = await import('node:path')
     // **四层**：`…/xwechat_files/<wxid>/db_storage/message/message_0.db`
     // → message → db_storage → <wxid> → xwechat_files。少一层就退到 `<wxid>` 目录，
     // 于是两个路径永远不相等、永远报"不是同一份"（一个看着很合理的假警告）。
-    const dbPathConfigured = String(configService.get('ntDbPath') || '')
+    const dbPathConfigured = String(configService.get('dataVersion') || '') === '4.x'
+      ? String(configService.get('ntDbPath') || '')
+      : ''
     const configuredRoot = dbPathConfigured
       ? dirname(dirname(dirname(dirname(dbPathConfigured))))
       : ''
@@ -7397,6 +7403,8 @@ program
           running: client.running,
           version: client.version,
           loadedDirs: client.loadedDirs,
+          // 客户端自报的构建 token（并列的第二来源；**不拿它推版本号**，编码规则没解出来）
+          versionTokens: client.versionTokens,
           note: client.note,
           unusableVersionDirs: client.unusableVersionDirs,
           // 客户端**自己说**数据目录在哪（与配置不一致时说明两边不是同一份库）
@@ -7496,7 +7504,9 @@ program
     // 6. 微信客户端版本（`client` / `dataDirMatchesConfig` 在 action 开头已经算过）
     console.log(chalk.white('\n微信客户端:'))
     if (client.version) {
-      console.log(chalk.green(`  ✓ 运行时加载 ${client.version}`) + chalk.gray(` (${client.loadedDirs[0]})`))
+      // 并列报上客户端自报的构建 token：这是"哪个构建"的第二个来源（**不用它推版本号**）
+      const token = client.versionTokens.length ? chalk.gray(`  · 自报构建 ${client.versionTokens.join('、')}`) : ''
+      console.log(chalk.green(`  ✓ 运行时加载 ${client.version}`) + chalk.gray(` (${client.loadedDirs[0]})`) + token)
     } else {
       // **说"未知"而不是"没问题"**：取不到就说取不到，别给人一个假的安心
       console.log(chalk.gray(`  ○ 版本未知 — ${client.note}`))

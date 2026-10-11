@@ -19,13 +19,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  classifyVersionDirs, crashSummary, detectWechatClient, parseProcessRows, summarize,
+  classifyVersionDirs, clientVersionToken, crashSummary, detectWechatClient, parseProcessRows, summarize,
   updateDataCaveats, userLibDir, versionDirsUnder, wechatFilesPath, xwechatRoot,
 } from '../src/services/wechatClient.js'
 
-/** 进程画像的默认值，省得每处都写 `dataDir`。 */
-const proc = (pid: number, loadedDir: string | null, dataDir: string | null = null) =>
-  ({ pid, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir, dataDir })
+/** 进程画像的默认值，省得每处都写那两个可选字段。 */
+const proc = (pid: number, loadedDir: string | null, dataDir: string | null = null,
+              versionToken: string | null = null) =>
+  ({ pid, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir, dataDir, versionToken })
 
 test('命令行里取 --user-lib-dir：带引号、不带引号、带空格都要认', () => {
   assert.equal(userLibDir('"D:\\WeiXin\\Weixin.exe" --user-lib-dir="D:\\WeiXin\\4.1.15.13" --no-sandbox'),
@@ -139,6 +140,19 @@ test('命令行里取 --wechat-files-path：客户端自己说数据目录在哪
   assert.equal(wechatFilesPath('x --wechat-files-path=D:\\a'), 'D:\\a')
   assert.equal(wechatFilesPath('x --type=renderer'), null)
   assert.equal(wechatFilesPath(''), null)
+})
+
+test('客户端自报的构建 token 要报出来，但**不拿它推版本号**', () => {
+  // 实测：本机 AppEx 命令行上的 `--client_version=4065599245` 正是 `0xF2541F0D` —— 那份逆向报告
+  // 从反编译 / 插件 manifest / UA 三处定的版本号，这里是**第四个独立来源**。
+  assert.equal(clientVersionToken('WeChatAppEx.exe --client_version=4065599245'), '0xF2541F0D')
+  // 第二组用机器算出来的值（手算十六进制我第一版就写错了一个字符 —— 这类期望值一律机器算）
+  assert.equal(clientVersionToken('--client_version=1728058427'), '0x6700143B')
+  assert.equal(clientVersionToken('--client_version=0'), null, '0 不是版本')
+  assert.equal(clientVersionToken('x --type=renderer'), null)
+  // 它与三段式版本号的编码规则**没人解出来**（报告只说"两版高 16 位都是 F254"）⇒ 只并列报出，
+  // 不互相推导。这条断言钉的是"它就是个 token"，格式固定为 0x + 8 位大写十六进制。
+  assert.match(clientVersionToken('--client_version=1')!, /^0x[0-9A-F]{8}$/)
 })
 
 test('崩溃记录：只数条数与最近时间，不读内容；目录不在时不许拿当前时间顶替', () => {

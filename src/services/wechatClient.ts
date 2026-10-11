@@ -35,6 +35,8 @@ export interface WechatClientProcess {
   loadedDir: string | null
   /** 命令行里的 `--wechat-files-path`：客户端自己说数据目录在哪（小程序那组进程会带）。 */
   dataDir: string | null
+  /** 命令行里的 `--client_version`：客户端自己的版本 token（十进制，如 `0xF2541F0D`）。 */
+  versionToken: string | null
 }
 
 /** 版本的判据与结论 —— 只跟"哪个进程加载了哪个目录"有关，读不到**别的来源**。 */
@@ -52,6 +54,8 @@ export interface WechatVersionFacts {
 }
 
 export interface WechatClientFacts extends WechatVersionFacts {
+  /** 客户端自报的构建 token（`--client_version`，如 `0xF2541F0D`）—— 与目录名并列的**第二个来源**。 */
+  versionTokens: string[]
   /** 进程命令行里的 `--wechat-files-path`：**客户端自己说**数据目录在哪。 */
   dataDirs: string[]
   /** `update\update.data` 在不在（在 ⇒ 加载路径可能不由命令行决定；见 `caveats`）。 */
@@ -101,6 +105,7 @@ export function parseProcessRows(raw: string): WechatClientProcess[] {
       exe: String(r.ExecutablePath || ''),
       loadedDir: userLibDir(commandLine),
       dataDir: wechatFilesPath(commandLine),
+      versionToken: clientVersionToken(commandLine),
     })
   }
   return out
@@ -131,6 +136,25 @@ export function wechatFilesPath(commandLine: string): string | null {
   if (!m) return null
   const value = (m[1] || m[2] || m[3] || '').trim().replace(/["']/g, '')
   return value || null
+}
+
+/**
+ * 命令行里的 `--client_version`：客户端**自己的版本 token**（十进制）。
+ *
+ * 为什么要报它：它是"哪个构建"的**另一个独立来源** —— 版本目录名（`4.1.15.13`）是装载位置，
+ * 而这个是客户端自报的构建标识，两者来自不同的地方。顺带：实测本机这个值 `4065599245`
+ * 正是 `0xF2541F0D`，也就是那份逆向报告从三处（反编译 / 插件 manifest / UA）定下来的版本号。
+ *
+ * ⚠️ **不给"版本号"**：token 与三段式版本号之间的编码规则**没人解出来**（报告只确认"旧版
+ * `0xF2541D0C` → 新版 `0xF2541F0D`，高 16 位两版都是 `F254`"）。所以它只作为**并列的第二来源**
+ * 报出去，不拿它去推版本号。
+ */
+export function clientVersionToken(commandLine: string): string | null {
+  const m = /--client_version\s*=\s*(\d+)/.exec(String(commandLine || ''))
+  if (!m) return null
+  const value = Number(m[1])
+  if (!Number.isFinite(value) || value <= 0) return null
+  return '0x' + value.toString(16).toUpperCase().padStart(8, '0')
 }
 
 /** 客户端崩溃记录：只数文件、只取最近时间，**不读任何内容**。 */
@@ -308,6 +332,7 @@ export async function detectWechatClient(run: PowershellRunner = defaultRunner):
   const root = xwechatRoot()
   const nothing: WechatClientFacts = {
     running: false, loadedDirs: [], version: null, note: '', unusableVersionDirs: [],
+    versionTokens: [],
     dataDirs: [], updateData: { path: root ? join(root, 'update', 'update.data') : '', present: false },
     crashRecords: { dir: root ? join(root, 'crashinfo') : '', reports: 0, records: 0, newest: null },
     caveats: [],
@@ -339,6 +364,8 @@ export async function detectWechatClient(run: PowershellRunner = defaultRunner):
   const present = !!updateFile && existsSync(updateFile)
   return {
     ...version,
+    // 客户端自报的构建 token（与"目录名"并列的第二来源）——**不拿它推版本号**，编码规则没人解出来
+    versionTokens: [...new Set(processes.map(p => p.versionToken).filter((t): t is string => !!t))],
     dataDirs: [...new Set(processes.map(p => p.dataDir).filter((d): d is string => !!d))],
     updateData: { path: updateFile, present },
     crashRecords: crashSummary(nothing.crashRecords.dir),

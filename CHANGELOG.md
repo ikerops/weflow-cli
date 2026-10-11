@@ -44,6 +44,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   discovering the data root, and reports which source won, because the other two routes (well-known locations,
   scanning the disk for the folder name) both guess from the name. A hint still has to pass the same structural
   check (an account folder must exist under it) - being handed a path is not the same as the path working.
+  The comparison against the configured root only runs on a 4.x setup: that root is derived from the 4.x database
+  path, so on a 3.x-only machine it would produce a warning that cannot mean anything (and the line only prints
+  when it is false, which is exactly where a meaningless warning hurts). The same row now also prints the build
+  token the client reports (`--client_version`) next to the directory name - a second, independent source for
+  "which build is this"; the two are shown side by side and neither is derived from the other, because the mapping
+  between the token and the dotted version has not been worked out.
 - **The 2D knowledge graph shows names again when you click a concept.** Focusing a node dims everything else and is
   supposed to make "who is it connected to" visible - but the label pass only ever considered nodes *outside* the
   highest-degree batch, so clicking a hub (in a small graph: clicking anything) drew **no names at all** while the

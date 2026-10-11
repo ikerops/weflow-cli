@@ -1464,6 +1464,37 @@ which is what the gate is for.
 **没做的（明写）**：**没有**去解析 `update.data`（报告说它的**内部格式完全没解** ⇒ 不猜）；
 非 Windows 直接报"只做了 Windows"（不是"没问题"）；**没有**读 exe 的字面量（故意的，见判据 1）。
 
+**怎么自己复核这几条**（照那份报告的附录 A 的规矩：结论要能直接复现，别只信写的人）：
+
+```powershell
+# ① 运行时加载的是哪一份（判据是进程命令行，不是 exe 里的字面量）
+weflow-cli check --json          # 看 wechatClient.version / loadedDirs / unusableVersionDirs
+Get-CimInstance Win32_Process -Filter "Name='Weixin.exe'" | Select-Object ProcessId, CommandLine
+
+# ② 客户端自报的数据目录（在小程序那组进程上；`Weixin.exe` 上没有）
+Get-CimInstance Win32_Process -Filter "Name='WeChatAppEx.exe'" | Select-Object -ExpandProperty CommandLine |
+  Select-String 'wechat-files-path'
+
+# ③ 残留版本目录：**有版本目录 ≠ 能用**，判据是有没有 Weixin.dll
+Get-ChildItem D:\WeiXin -Directory | ForEach-Object {
+  "{0,-14} 文件 {1,4}  Weixin.dll:{2}" -f $_.Name,
+    (Get-ChildItem $_.FullName -File | Measure-Object).Count,
+    (Test-Path (Join-Path $_.FullName 'Weixin.dll'))
+}
+
+# ④ 崩溃记录（**只数那三个子目录** —— 与代码同一口径；只数条数，不读内容）
+Get-ChildItem "$env:APPDATA\Tencent\xwechat\crashinfo\reports",
+              "$env:APPDATA\Tencent\xwechat\crashinfo\records",
+              "$env:APPDATA\Tencent\xwechat\crashinfo\metadata" -File -ErrorAction SilentlyContinue |
+  Measure-Object
+```
+
+`4.1.15.13` + `4.1.15.11`（1 个文件）这两条就是上面 ①③ 跑出来的；数据目录那条的"按真身比"是因为
+`C:\Users\<你>\xwechat_files` 实测是 `D:\微信\xwechat_files` 的**软链**（`③` 之外再 `realpath` 一下即可）。
+②里那条命令行上还带着 `--client_version=4065599245`（= `0xF2541F0D`）—— 客户端**自报的构建 token**，
+`check` 会把它与目录名**并列**报出来（它是"哪个构建"的第二个独立来源；token 与三段式版本号之间的
+编码规则没人解出来，所以两者谁也不推谁）。
+
 ## D-106: 同库内消歧 —— 跨线同名的链接按名字带路径，而不是把两条线拆成两个库
 
 **Status:** Active（补上 D-104 明确留下的那个口子：那条说"二义**报出来**而不是回避"，这条说**怎么修**）
