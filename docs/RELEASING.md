@@ -203,6 +203,13 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
   `docs/DECISIONS.md` 与更晚的一次提交一致，`README.en.md` 则**与任何提交都不一致**（比 tag 那份
   长约 7,000 字符）。代码部分没问题（逐字节相同），但**那次发布出去的文档再也回不来** ——
   这正是"不把 npm 发布包当作 GitHub 源码的实时镜像；先确认版本和提交"这条规矩要防的事。
+- **1.9.0 的出处核过了（2026-10-11，用上面同一套办法）**：把 registry 上的 tarball 与
+  `git archive v1.9.0` 逐文件比（行尾归一后比内容）：两边都有的 **289 个文件全部逐字节一致、0 处不同**；
+  包里多出的 212 个是 `dist/`（构建产物、不在 git 里）；tag 里有而包里没有的 124 个是白名单外的
+  东西（`.github/`、`AGENTS.md`、`package-lock.json`、`scripts/*.ts` 等）。
+  ⚠️ 其中 **`logo.png` 与 `scripts/data/wechat_emoji.json` 两个文件当时确实没进包** —— 那正是
+  1.10.0 修掉的缺口（同一件事，两条独立的路都指到它）。
+  **结论：1.8.0 那个"发出去的文档再也回不来"没有在 1.9.0 重演** ✅
 
 
 ## 发布后
