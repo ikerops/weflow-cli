@@ -105,8 +105,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   CI `node` job after the build. **The same check now also covers `capabilities --json`**: its `cli:` fields are
   hand-written (the MCP half of that output is derived from the real registry), the output is the documented entry
   point for learning this project, and it currently checks out - 21 strings, 0 mismatches, which is exactly the
-  point: accurate today is not the same as watched. Each surface has its own anti-empty-scan, so losing one does
-  not report a pass.
+  point: accurate today is not the same as watched. **A third surface is covered as well**: `python|py
+  scripts/x.py --flag` inside the same docs' code blocks. The judge there does **not** run the scripts - this
+  repo's standing discipline is "pure AST, never import" (`test/script_stdout_encoding_test.py` says why: CI's
+  python job installs two dependencies, so importing would fail spuriously), so the scripts' `add_argument` calls
+  are read as the declaration table. Measured 2026-10-11: **24 documented calls, every script present, every flag
+  declared**. The doc-command surface keeps its anti-empty-scan (the default corpus always has commands); an
+  explicit `--files <fixture>` no longer trips it, since a fixture may legitimately hold only one kind.
 
 - **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist
   of directories and globs, and both files sat just outside the patterns: `scripts/data/wechat_emoji.json` (read by

@@ -32,15 +32,17 @@ npm 包与 GitHub 分开发布，中间隔多久都不奇怪——`1.5.0` 与主
 ```powershell
 npm run build
 npm test
-py scripts/check_readme_commands.py          # 文档与 capabilities 里写的命令必须真的存在
+py scripts/check_readme_commands.py          # 文档/脚本调用/capabilities 里写的命令必须真的存在
 ```
 
 最后那条盯的是**用户先发现的那一类漂移**：`1.5.0` 与主线拉开 128 个提交时，用户照着 README 敲
-`init --path` 得到 `unknown option`。它逐级问 CLI 的 `--help`（不复刻命令表），扫**两个手写的命令面**：
+`init --path` 得到 `unknown option`。它逐级问 CLI 的 `--help`（不复刻命令表），扫**三个手写的命令面**：
 **用户文档**的围栏代码块（两份 README + 仓库根那几份 + `docs/*.md`，排除按性质记录过去的
-`CHANGELOG.md` 与 `docs/DECISIONS.md` —— 它们会成段引用当时的命令），以及 `capabilities --json` 里
-手写的 `cli:` 串（那个输出的 MCP 那半是从真实注册表派生的，不用管）。`--self-test` 是它自己的正对照；
-两个面各有反空扫，少扫一面就不报通过。CI 的 `node` job 每次推送都会跑这两步。
+`CHANGELOG.md` 与 `docs/DECISIONS.md` —— 它们会成段引用当时的命令）、同一批代码块里的
+`python|py scripts/x.py --flag` 调用（**不跑脚本**，按 AST 读它们的 `add_argument` 声明表 —— 仓库对
+Python 脚本的既定纪律就是不 import 也不运行），以及 `capabilities --json` 里手写的 `cli:` 串
+（那个输出的 MCP 那半是从真实注册表派生的，不用管）。`--self-test` 是十条正对照；文档命令那一面
+还有反空扫（缺省语料一定有命令，扫到 0 条就不报通过）。CI 的 `node` job 每次推送都会跑这两步。
 
 > 2026-10-11 它就是这么抓到东西的：`OPERATIONS.md` 教用户敲 `search --no-rerank`，而 CLI 从来没有
 > 这个旗标（Python 侧一直有）。只扫两份 README 时它一条也扫不到 —— 所以缺省集合就是"用户文档"。
