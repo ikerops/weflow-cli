@@ -14,6 +14,7 @@ WeFlow CLI is a local-first command-line tool and MCP server for user-authorized
 - Compiled/package command: `node cli.cjs <command>`; CLI, MCP, database, export, and assistant services resolve resources from the same package root in both source and compiled layouts.
 - Build check: `npm run build`.
 - Regression check: `npm test`.
+- npm package contents: what ships is `package.json` -> `files`, and it is an allowlist of **directories and globs** - a file added just outside a listed pattern is dropped with nothing going red. `test/pack-contents.test.ts` asserts the positive side against a real `npm pack --dry-run --json`: every tracked file under `scripts/` ships except the `.ts` dev entry points, and every local image the two READMEs reference ships. The negative side (nothing from `output/` or `models/`, no keys) is the CI `release-consistency` job. Both halves mattered on 2026-10-11: the published `1.9.0` tarball was missing `scripts/data/wechat_emoji.json` (the emoji fallback map `scripts/wechat_emoji.py` reads) and `logo.png`, so npm installs rendered a batch of face codes as literal text and the package page showed a broken logo.
 - Downstream data contract: local JSON export is the first compatibility boundary for `she-love-me` and future consumers; see `docs/DATA_CONTRACT.md`.
 - Supported focus: Windows WeChat 4.x; Linux WeChat 4.x has an NT database path; macOS requires user-provided local access credentials for initialization.
   The version actually verified on this machine is **4.1.15.13** (2026-10-11) - and the way to read that is the live

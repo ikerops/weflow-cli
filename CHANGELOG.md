@@ -19,6 +19,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist
+  of directories and globs, and both files sat just outside the patterns: `scripts/data/wechat_emoji.json` (read by
+  `scripts/wechat_emoji.py`, whose reader swallows a missing file into an empty map) and `logo.png` (the image both
+  READMEs display). Measured on the published artifact rather than inferred: the registry's `weflow-cli@1.9.0`
+  tarball holds 501 files and neither of these, while shipping all 118 emoji PNGs. The two install routes therefore
+  rendered chat faces differently - for npm users, 37 Chinese face codes (`[乒乓]`, `[冷汗]`, `[开红包]`, ...) and 67
+  English aliases came out as literal bracketed text instead of the nearest emoji, and the package page showed a
+  broken logo. `test/pack-contents.test.ts` covers the half nothing did: the CI `release-consistency` job only
+  checks what must *not* be in the package, never what must be in it. Note the cost - `logo.png` is a 1254x1254
+  unrecompressed 1.4 MB PNG displayed at 280px, so the tarball goes from 10.49 MB to 11.87 MB; shrinking it is a
+  separate decision (the panel mascot is already handled that way - a derived, right-sized file rather than the
+  original).
 - **`health_check` no longer calls the two read paths inconsistent just because a message arrived during the
   check.** That row compares the newest message each path reports, and `json` runs first while `html` runs a minute
   or two later - so a message landing in between produced exactly the symptom the row exists to catch (observed on

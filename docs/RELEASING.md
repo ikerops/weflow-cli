@@ -57,6 +57,13 @@ grep -E "^output/|^models/|node_modules|\.env|\.db$|\.dat$|secret|credential" /t
 grep -E "新文件名" /tmp/list.txt
 ```
 
+这后半句（"**该有的在不在**"）现在有自动判据：`test/pack-contents.test.ts` 跑一次
+`npm pack --dry-run --json`，断言 `scripts/` 下每个跟踪文件（`.ts` 开发入口除外）与两份 README 引用的
+本地图片都在包里。它防的故障 2026-10-11 在**真实发布物**上量到过：registry 上 `weflow-cli@1.9.0`
+的 501 个文件里同时缺 `scripts/data/wechat_emoji.json` 与 `logo.png` —— 前者让 npm 用户导出的
+聊天记录里一批表情码原样显示成 `[名字]`，后者让包页面挂着一张裂图。这条测试跟着 `npm test` 跑，
+CI 的 `node` job 也在跑；上面那条人工命令留着，用来核对本次**新加**的文件名。
+
 ## 5. 发布
 
 需要 npm 凭据。`ribiaosu` 账号开了 2FA，所以两条路：
