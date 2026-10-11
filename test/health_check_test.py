@@ -10,6 +10,7 @@
   因为 `dist` 还没重建 —— 也就是说，少了这一项却一片绿是现实里会发生的事。
 """
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -80,6 +81,57 @@ class WechatClientCheckTests(unittest.TestCase):
         self.assertIn('崩溃记录 3 份', row['detail'])
         self.assertIn('2026-10-10', row['detail'])
         self.assertIn('update.data', row['detail'])
+
+
+class ScheduledTasksCheckTests(unittest.TestCase):
+    """`schtasks` 的输出**读不出来**时，必须报"没验证"，不能报"上次成功"。
+
+    这一项原来会假绿：判据是在输出里找 `Last Result` / `上次运行结果` 那一行，找不到时
+    两个清单都是空的 ⇒ 落到 else 报"均在位且上次成功"。系统语言或输出格式一变就会走到那条路。
+    与 `docs/DECISIONS.md` D-107 那条"取不到就说未知"是同一条纪律。
+    """
+
+    @staticmethod
+    def _proc(stdout, returncode):
+        class P:
+            pass
+        p = P()
+        p.stdout, p.returncode = stdout, returncode
+        return p
+
+    def run_check(self, stdout, returncode=0):
+        report = hc.Report()
+        with patch.object(hc.shutil, 'which', lambda name: 'schtasks'), \
+             patch.object(hc.subprocess, 'run', lambda *a, **k: self._proc(stdout, returncode)):
+            hc.check_scheduled_tasks(report)
+        self.assertEqual(len(report.rows), 1)
+        return report.rows[0]
+
+    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
+    def test_上次成功(self):
+        row = self.run_check('TaskName:   WeFlow Issue Watch\nLast Result: 0\n')
+        self.assertTrue(row['ok'])
+        self.assertIn('均在位且上次成功', row['detail'])
+
+    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
+    def test_上次失败(self):
+        row = self.run_check('TaskName:   WeFlow Issue Watch\nLast Result: 1\n')
+        self.assertFalse(row['ok'])
+        self.assertIn('上次运行失败', row['detail'])
+
+    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
+    def test_读不出上次结果时不算通过(self):
+        """**这条钉的是假绿**：输出里没有那一行（语言/格式变了）⇒ 说"读不出"，不说"成功"。"""
+        row = self.run_check('TaskName:  WeFlow Issue Watch\nStatus:  Ready\n')
+        self.assertFalse(row['ok'])
+        self.assertIn('读不出', row['detail'])
+        self.assertNotIn('上次成功', row['detail'])
+
+    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
+    def test_任务不存在(self):
+        row = self.run_check('', returncode=1)
+        self.assertFalse(row['ok'])
+        self.assertIn('不存在', row['detail'])
 
 
 if __name__ == '__main__':

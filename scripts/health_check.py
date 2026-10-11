@@ -269,7 +269,13 @@ def check_python_deps(report):
 
 
 def check_scheduled_tasks(report):
-    """The watcher tasks must exist and their last run must have succeeded."""
+    """The watcher tasks must exist and their last run must have succeeded.
+
+    **"读不出来"必须与"上次成功"分开**：这一项的判据是从 `schtasks` 的文本输出里找
+    `Last Result` / `上次运行结果` 那一行 —— 系统语言或输出格式一变，那一行就找不到了，
+    而**两个清单都会是空的**，于是它落到 `else`、报"均在位且上次成功"。
+    那正是把"没验证"说成"通过"（同一类：`docs/DECISIONS.md` D-107 里那条"取不到就说未知"）。
+    """
     if os.name != 'nt':
         report.add('计划任务', True, '非 Windows，跳过')
         return
@@ -277,7 +283,7 @@ def check_scheduled_tasks(report):
         report.add('计划任务', True, '找不到 schtasks，跳过')
         return
     names = ['WeFlow Issue Watch', 'WeFlow Mail Watch']
-    broken, absent = [], []
+    broken, absent, unreadable = [], [], []
     for name in names:
         try:
             proc = subprocess.run(['schtasks', '/query', '/tn', name, '/fo', 'LIST', '/v'],
@@ -289,17 +295,28 @@ def check_scheduled_tasks(report):
             absent.append(name)
             continue
         text = proc.stdout or ''
+        result = None
         for line in text.split('\n'):
             if 'Last Result' in line or '上次运行结果' in line:
                 result = line.split(':', 1)[-1].strip()
-                if result not in ('0', '0x0'):
-                    broken.append(f'{name}={result}')
+                break
+        if result is None:
+            # 输出里**没有那个字段**：要么语言/格式变了，要么它没在汇报这一项。
+            # 这时该说的是"读不出来"，不是"上次成功"。
+            unreadable.append(name)
+        elif result not in ('0', '0x0'):
+            broken.append(f'{name}={result}')
     if broken:
         report.add('计划任务', False, f'上次运行失败: {", ".join(broken)}',
                    '脚本可能抛异常了，手动跑一次看输出')
     elif absent:
         report.add('计划任务', False, f'不存在: {", ".join(absent)}',
                    '提醒不会触发；见 docs/HEALTH-CHECK.md 的注册命令')
+    elif unreadable:
+        # **不算通过**：这一项没被验证过（不是"上次成功"）
+        report.add('计划任务', False, f'读不出上次运行结果: {", ".join(unreadable)}',
+                   'schtasks 的输出格式或系统语言变了 —— 这一项**没有验证**，不代表成功；'
+                   '手动跑 `schtasks /query /tn "WeFlow Issue Watch" /fo LIST /v` 看一眼')
     else:
         report.add('计划任务', True, '均在位且上次成功')
 

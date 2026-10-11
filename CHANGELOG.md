@@ -19,6 +19,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`health_check` no longer reports the scheduled tasks as "all present and last run succeeded" when it could
+  not actually read the result.** That row parses the text `schtasks` prints and looks for the `Last Result` line;
+  if a system language or an output-format change takes that line away, both its "failed" and its "missing" lists
+  stay empty and it fell through to the success message - a green row for something it never verified. It now says
+  **not verified** (and fails) instead, with the command to check by hand. Same rule as the client-version row:
+  not being able to read something is not the same as it being fine.
 - **`check` and `health_check` now report which WeChat build is actually loaded.** They reported the database
   format ("4.x") but never the client version, which is the first thing to ask when data refuses to load. The
   version comes from the **live process's `--user-lib-dir`** (the only place that knows it - the parameter does
