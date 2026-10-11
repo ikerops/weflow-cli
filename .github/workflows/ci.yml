@@ -51,6 +51,11 @@ jobs:
             done
             exit 1
           }
+          # 跳过 ≠ 通过：`ℹ skipped N` 只出现在日志里，而日志本机读不到 ⇒ 把"有东西没跑"发出来。
+          # 用 warning（不失败）——依赖装不上时静默跳过是**有意**的选择，但覆盖率的缺口不能被藏起来。
+          grep -E '^ℹ skipped [1-9]|^# skip ' /tmp/weflow-test.log | head -20 | while IFS= read -r line; do
+            echo "::warning::有测试没跑：$line"
+          done
 
   python:
     runs-on: ubuntu-latest
@@ -65,7 +70,23 @@ jobs:
       # import numpy, 两者都在 requirements.txt 里。缺了它们不是"跳过"而是整批 collection error,
       # 所以这里必须装齐(用 sqlcipher3-binary: 预编译 wheel, 不必就地编 OpenSSL)。
       - run: python -m pip install --quiet zstandard pycryptodome numpy sqlcipher3-binary
-      - run: python -m unittest discover -s test -p '*_test.py' -v
+      - name: python tests
+        # 与 node job 同一套路：**失败**与**跳过**都发成 annotation（日志本机读不到，annotation 能读）。
+        # 跳过尤其要发：这一层有两个静默缺口叠在一起 —— `sqlcipher3-binary` 的 install 标着
+        # `continue-on-error`（有意，别因自己控制不了的依赖让 job 挂），而缺 `sqlcipher3` / `zstandard`
+        # 的用例会 `skipTest` ⇒ 依赖装不上时那批覆盖**无声消失**，job 照样是绿的。发 warning，不失败。
+        run: |
+          set -o pipefail
+          python -m unittest discover -s test -p '*_test.py' -v 2>&1 | tee /tmp/weflow-pytest.log || {
+            echo "::error::python 测试失败——下面把失败的用例名发成 annotation"
+            grep -E '^(FAIL|ERROR): ' /tmp/weflow-pytest.log | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          }
+          grep -E "skipped '" /tmp/weflow-pytest.log | head -20 | while IFS= read -r line; do
+            echo "::warning::有测试没跑（跳过）：$line"
+          done
 
   # 发布前的一致性校验: 版本号、锁文件、npm 包内容
   release-consistency:
