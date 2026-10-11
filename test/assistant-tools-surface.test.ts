@@ -44,6 +44,21 @@ process.env.WEFLOW_ASSISTANT_BIZ_DAILY_DIR = BIZ_DAILY
 process.env.WEFLOW_ASSISTANT_REVIEWS_DIR = REVIEWS
 process.env.WEFLOW_ASSISTANT_SKILL_DIRS = SKILLS
 
+// 知识库那两条线也要指到夹具（`get_concepts` / `lint_wiki` 都从 `WEFLOW_ASSISTANT_VAULT_DIR` 取）。
+// 不注入的话它们读的是开发机上真实的 `output/wechat-vault` —— 本机有、CI 上没有，于是
+// `lint_wiki` 在 CI 上直接"目录不存在，跳过"（2026-10-11 报红 2 条；顺带暴露出那一段的假绿：
+// 一条线都没体检过，它却说"两个知识库都没有断链/孤儿/空页/同名"，那句假话已改）。
+const VAULT = join(HOME, 'wechat-vault')
+const VAULT_LINES: Array<[string, string[]]> = [['Wiki', ['夹具一', '夹具二']], ['Chat', ['夹具聊天']]]
+for (const [lineDir, pages] of VAULT_LINES) {
+  mkdirSync(join(VAULT, lineDir, 'Concepts'), { recursive: true })
+  for (const page of pages) {
+    writeFileSync(join(VAULT, lineDir, 'Concepts', `${page}.md`), `# ${page}\n\n夹具概念页。\n`, 'utf8')
+  }
+  writeFileSync(join(VAULT, lineDir, '00-Overview.md'), `# 总览\n\n共 ${pages.length} 个概念。\n`, 'utf8')
+}
+process.env.WEFLOW_ASSISTANT_VAULT_DIR = VAULT
+
 const { executeTool, TOOL_DEFS, MCP_TOOL_DEFS, wikiIndexPath } = await import('../src/services/assistantTools.js')
 const { AssistantMemory } = await import('../src/services/assistantMemory.js')
 const { chatService } = await import('../src/services/chatService.js')
@@ -170,6 +185,24 @@ test('lint_wiki：脚本失败时不许说"体检通过"', async () => {
     assert.match(out, /体检失败/)
     assert.doesNotMatch(out, /都没有断链/)
   } finally { resetScripts() }
+})
+
+test('lint_wiki：两条线都不存在时也不许说"都干净"（跳过 ≠ 通过）', async () => {
+  // CI 上的真实处境：检出里没有 `output/wechat-vault`。原来那一支会先加一句
+  // "两个知识库都没有断链/孤儿/空页/同名"，紧接着两行"目录不存在，跳过"——**没看过却说干净**。
+  // 用户没编译过知识库时撞的是同一句话。
+  const realVault = process.env.WEFLOW_ASSISTANT_VAULT_DIR
+  process.env.WEFLOW_ASSISTANT_VAULT_DIR = join(HOME, 'no-such-vault')
+  stubScript(JSON.stringify({ pages: 0, broken: [], orphans: [], empty: [], duplicateTitles: {} }))
+  try {
+    const out = await run('lint_wiki', {})
+    assert.doesNotMatch(out, /都没有断链/, '一条线都没体检过，不能说"都干净"')
+    assert.match(out, /【文章线】目录不存在，跳过/)
+    assert.match(out, /【聊天线】目录不存在，跳过/)
+  } finally {
+    process.env.WEFLOW_ASSISTANT_VAULT_DIR = realVault
+    resetScripts()
+  }
 })
 
 // --------------------------------------------------------------- check_skills

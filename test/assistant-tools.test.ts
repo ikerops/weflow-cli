@@ -191,7 +191,10 @@ test('live MCP: 不带 confirm 调 draft_reply 绝不会产出草稿（边界走
     })
     const text = String((result.content[0] as { text?: string }).text ?? '')
     assert.doesNotMatch(text, /建议这样回/, '没确认就不许产出草稿')
-    assert.match(text, /预览|没找到|起草预览失败/, `既不是预览也不是本地查不到：${text.slice(0, 120)}`)
+    // 隐私模式是**机器状态**：干净检出里默认就是 strict，起草那一步会先回一句"正文不出境"
+    // （`assistantTools.ts:1845`），走不到"预览"那一支。所以这里认的是"**一句事前拒绝**"，
+    // 而不是某一句话——上面那条才是真正的边界：走哪一支都不许产出草稿。
+    assert.match(text, /预览|没找到|起草预览失败|隐私模式是 strict/, `既不是预览也不是本地查不到：${text.slice(0, 120)}`)
   } finally {
     await client.close()
   }

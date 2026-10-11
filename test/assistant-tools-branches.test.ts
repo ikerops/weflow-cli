@@ -58,6 +58,22 @@ writeFileSync(join(BIZ_DAILY, DAY2, '.articles.json'), JSON.stringify([
 ]), 'utf8')
 process.env.WEFLOW_ASSISTANT_BIZ_DAILY_DIR = BIZ_DAILY
 
+// 知识库目录同样要指到夹具（`WEFLOW_ASSISTANT_VAULT_DIR`，每次调用读一次）：不注入的话
+// `search_knowledge` / `get_stats` 读的是开发机上真实的 `output/wechat-vault` —— 本机有、CI 上没有，
+// 于是同一段断言在两边走**不同分支**（本机"文章线里没收录"，CI"知识库尚未生成"）。
+// 2026-10-11 的 CI 就是这么红的 4 条；这几条测试原来写着"与环境无关的那部分"，其实不是。
+// 两条线各建概念页，并各写一份总览索引 —— `get_stats` 是从索引里抽「共 N 个概念」的，不数目录。
+const VAULT = join(HOME, 'wechat-vault')
+const VAULT_LINES: Array<[string, string[]]> = [['Wiki', ['夹具一', '夹具二']], ['Chat', ['夹具聊天']]]
+for (const [lineDir, pages] of VAULT_LINES) {
+  mkdirSync(join(VAULT, lineDir, 'Concepts'), { recursive: true })
+  for (const page of pages) {
+    writeFileSync(join(VAULT, lineDir, 'Concepts', `${page}.md`), `# ${page}\n\n夹具概念页。\n`, 'utf8')
+  }
+  writeFileSync(join(VAULT, lineDir, '00-Overview.md'), `# 总览\n\n共 ${pages.length} 个概念。\n`, 'utf8')
+}
+process.env.WEFLOW_ASSISTANT_VAULT_DIR = VAULT
+
 const { chatService } = await import('../src/services/chatService.js')
 const { wereadService } = await import('../src/services/wereadService.js')
 const { AssistantMemory } = await import('../src/services/assistantMemory.js')
@@ -441,9 +457,11 @@ test('search_knowledge 缺关键词时不读盘', async () => {
   assert.equal(await run('search_knowledge', {}), '(缺少 keyword 参数)')
 })
 
-test('search_knowledge 找不到时说清是哪个范围没收录（与环境无关的那部分）', async () => {
+test('search_knowledge 找不到时说清是哪个范围没收录', async () => {
   const out = await run('search_knowledge', { keyword: '绝不存在的概念xyzzy' })
-  assert.ok(/没收录「绝不存在的概念xyzzy」/.test(out) || /知识库尚未生成/.test(out), out)
+  // 夹具在 ⇒ 一定走"搜过、但这一条线里没有"那一支（以前写的是"与环境无关的那部分"，
+  // 可它其实两只脚都踩在开发机上：CI 没有 output/wechat-vault，于是走了另一支、报红）
+  assert.match(out, /^\(文章线没收录「绝不存在的概念xyzzy」, 这一趟看了 \d+ 个概念页；`line: 'all'` 可以连另一条线一起搜\)$/, out)
   // **范围要写在里面**：只写"知识库未收录"会被读成"整个知识库都没有"，
   // 而它其实只是"这一条线里没有"（默认只搜文章线，两条线是分开的）
   assert.ok(/文章线/.test(out), `该说明搜的是哪条线：${out}`)
@@ -463,7 +481,7 @@ test('search_knowledge：line 认不出时报错，不悄悄当 all', async () =
 })
 
 test('search_knowledge：要聊天线时只读那一个目录', async () => {
-  // 这一条只钉**范围过滤生效**（目录是仓内的真实路径，两个都存在时结果不同）
+  // 这一条只钉**范围过滤生效**（两条线的概念目录都在夹具里，所以两边必然走同一支）
   const wikiOnly = await run('search_knowledge', { keyword: 'xyzzy-no-such', line: 'wiki' })
   const chatOnly = await run('search_knowledge', { keyword: 'xyzzy-no-such', line: 'chat' })
   assert.match(wikiOnly, /文章线/)
@@ -476,9 +494,10 @@ test('get_stats 汇总本地数据，并同时报出知识库那一半', async (
   // 前四行由夹具决定，所以逐字断言（旧版只断言两行——日报那半读的是真实机器）
   assert.match(await run('get_stats', {}),
     /^会话数: 2\n收藏总数: 9\n日报文章: 3 篇，覆盖 2 天（2026-01-01 ~ 2026-01-02）\n主题分布: AI2、新闻1/m)
-  // 概念页那半读知识库目录（2026-09-30 起可用 WEFLOW_ASSISTANT_VAULT_DIR 注入，同 bizDailyDir/reviewsDir）：只断言形状
-  assert.match(await run('get_stats', {}), /(概念页: .+|没有日报数据)/,
-    '知识库那一半要么给出数，要么说明为什么没有')
+  // 概念页那半读知识库目录（注入点同上）。夹具里两条线各建了索引，所以这里逐字断言——
+  // 原来是"只断言形状"（`概念页: .+` 或"没有日报数据"），而 CI 上两样都不成立，直接报红
+  assert.match(await run('get_stats', {}), /概念页: 文章线 2、聊天线 1/,
+    '知识库那一半要给出数（夹具里两条线各建了索引）')
 
   svc.getFavorites = async () => ({ success: false })
   assert.match(await run('get_stats', {}), /收藏总数: 未知/)

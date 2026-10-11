@@ -339,6 +339,13 @@ function fmtTime(ts: number): string {
  *
  * 与 `fmtTime`（给用户看的工具输出用 `9/23 12:20`）**故意不同**：转录这一行的形状要和
  * Python 侧逐字一致，见 `transcriptLine`。改 `fmtTime` 会连带改用户看到的东西，所以这里单独一个。
+ *
+ * **时区也是契约的一部分，而且是固定 +8（北京时间），不是本机时区**：Python 那边写的是
+ * `TZ = timezone(timedelta(hours=8))`（`scripts/reply_debt.py:39`），同一段对话从面板进来
+ * 与从命令行进来必须是同一串字符。用 `getHours()` 取本机时区，在非 +8 的机器上两边会差几小时
+ * ——CI（UTC）实测差 8 小时：TS 出 `09-23 04:00`、Python 出 `09-23 12:00`。
+ * 中国没有夏令时，固定 +8 是精确的。要改成"跟随本机时区"，得连 Python 的欠账天数一起改
+ * （那里用同一个 TZ 算"等了多少天"），不是改这一行的事。
  */
 function transcriptTime(ts: number): string {
   const n = Number(ts)
@@ -2266,6 +2273,10 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // 两个知识库都要查（本仓的分线纪律：只查一个，另一半的断链永远看不见）
         const parts: string[] = []
         let totalBad = 0
+        // **真正体检过几条线。"跳过"不算"没问题"**：CI 上（检出里没有 `output/wechat-vault`）
+        // 两条线都只打「目录不存在，跳过」，而下面那一支原来照样会加一句"两个知识库都没有断链…"
+        // —— 没看过却说干净。用户没编译过知识库时也会撞上同一句话。
+        let checked = 0
         for (const dir of vaultDirs()) {
           // **线名优先由 Python 那边给**（`report.lineLabel`，源头是 `_utils.LINE_LABELS`）：
           // 两条线各自一个根之后聊天线很可能不再叫 `Chat`，按路径猜会把聊天线报成
@@ -2292,11 +2303,12 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
           // 跨线同名**不计入问题数**：两条线各留一张同名页是设计（两个命名空间分开），
           // 把它算成"要修的"会让人去修一个设计如此的东西。
           const cross = (d.crossLineSameName || []).length
+          checked += 1
           totalBad += broken + orphans + empty + dup
           parts.push(`【${line}】${d.pages || 0} 张页：断链 ${broken}、孤儿 ${orphans}、空页 ${empty}、同名 ${dup} 组`
             + (cross ? `（另有 ${cross} 个概念两条线都有，设计如此）` : ''))
         }
-        return (totalBad ? '' : '两个知识库都没有断链/孤儿/空页/同名。\n') + parts.join('\n')
+        return (checked && !totalBad ? '两个知识库都没有断链/孤儿/空页/同名。\n' : '') + parts.join('\n')
       }
       case 'check_skills': {
         const scan = scanSkills()
