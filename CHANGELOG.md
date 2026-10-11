@@ -19,6 +19,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **A `--json` command's *errors* are JSON too - and the four hand-written copies of that check are now one.**
+  `--line` was validated in four commands (`vault search`, `vault rag`, the semantic `search`, `chat`), each with
+  its own block, and only the first honoured `--json`: the other three answered an invalid `--line` with colored
+  prose on **stdout**, so `vault rag q --line zzz --json | jq` died on the first character while the exit code
+  said "1" and nothing else - not even which argument was wrong. Same defect as the entry above, found the same
+  afternoon by asking the siblings the same question ("what does this one print when `--json` is on and an argument
+  is wrong?"). The four blocks are replaced by `requireCliChoice(value, choices, field, json)`, which generates the
+  message and sits next to `parseCliInteger` / `requireCliDate` - both of which have always honoured `--json`, which
+  is exactly why the one-off copies didn't. `test/json-error-surface.test.ts` drives all four commands and pins both
+  halves (JSON under `--json`, the human sentence without it); all four return **before** touching local data, so CI
+  can run them. Reverting any one call site to the old prose form turns exactly that command's case red.
+
 - **"Every command a script or an AI might drive has a `--json` mode" is now checked rather than asserted.**
   `docs/EXTENDING.md` has stated that convention for a while and nothing enforced it - which is how `vault search`
   ended up as the one command whose only output was JSON while the flag itself did not exist (the entry below).

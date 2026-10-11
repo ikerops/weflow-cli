@@ -68,6 +68,22 @@ function parseCliInteger(value: unknown, field: string, minimum: number, maximum
   process.exit(1)
 }
 
+/** 校验一个"只能是这几个值之一"的参数。与 `parseCliInteger` / `requireCliDate` 同一约定：
+ * `--json` 时错误也得是一份 JSON —— 否则机器调用方在 stdout 上拿到的是彩色散文，解析不了。
+ *
+ * 抽成一个是有理由的：`--line` 的校验原本在四个命令里各写了一遍，其中三处只打散文（`vault rag`、
+ * 顶层 `search`、`chat`）—— 同一份判断写四遍，就有三遍漏掉了 `--json` 分支。
+ * 错误文案由 choices 生成，保证与原来逐字一致（'line 必须是 wiki、chat 或 all'）。
+ */
+function requireCliChoice(value: unknown, choices: readonly string[], field: string, json = false): string {
+  const text = String(value)
+  if (choices.includes(text)) return text
+  const error = `${field} 必须是 ${choices.slice(0, -1).join('、')} 或 ${choices[choices.length - 1]}`
+  if (json) console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', field, error }))
+  else console.log(chalk.red(error))
+  process.exit(1)
+}
+
 function requireCliDate(value: string, json = false): string {
   try {
     parseLocalDateOrIso(value)
@@ -4293,26 +4309,10 @@ program
         .action(async (query, opts) => {
           const pkgRoot = resolvePackageRoot()
           const script = join(pkgRoot, 'scripts', 'vault_search.py')
-          // 校验分支也要认 `--json`：否则 JSON 模式下 stdout 是一行彩色散文，脚本解析不了
-          // （`parseCliInteger` / `requireCliDate` 早就是这个约定，这里漏了）。
-          if (!['all', 'article', 'concept', 'note'].includes(opts.type)) {
-            if (opts.json) {
-              console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', field: 'type',
-                                           error: 'type 必须是 all、article、concept 或 note' }))
-              process.exit(1)
-            }
-            console.log(chalk.red('type 必须是 all、article、concept 或 note'))
-            process.exit(1)
-          }
-          if (!['wiki', 'chat', 'all'].includes(opts.line)) {
-            if (opts.json) {
-              console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', field: 'line',
-                                           error: 'line 必须是 wiki、chat 或 all' }))
-              process.exit(1)
-            }
-            console.log(chalk.red('line 必须是 wiki、chat 或 all'))
-            process.exit(1)
-          }
+          // 校验分支也要认 `--json`（`requireCliChoice` 里就带着这条约定）：
+          // 否则 JSON 模式下 stdout 是一行彩色散文，脚本解析不了。
+          requireCliChoice(opts.type, ['all', 'article', 'concept', 'note'], 'type', opts.json)
+          requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
           const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
           const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
           await runPythonCmd(script, [query, '--type', opts.type, '--line', opts.line,
@@ -4338,10 +4338,7 @@ program
           const pkgRoot = resolvePackageRoot()
           const script = join(pkgRoot, 'scripts', 'vault_rag.py')
           const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
-          if (!['wiki', 'chat', 'all'].includes(opts.line)) {
-            console.log(chalk.red('line 必须是 wiki、chat 或 all'))
-            process.exit(1)
-          }
+          requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
           const preview = {
             success: true,
             dryRun: true,
@@ -4955,10 +4952,7 @@ program
     const pkgRoot = resolvePackageRoot()
       const script = join(pkgRoot, 'scripts', 'semantic_search.py')
       const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
-      if (!['wiki', 'chat', 'all'].includes(opts.line)) {
-        console.log(chalk.red('line 必须是 wiki、chat 或 all'))
-        process.exit(1)
-      }
+      requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
       const preview = {
         success: true,
         dryRun: true,
@@ -5105,10 +5099,7 @@ program
     const pkgRoot = resolvePackageRoot()
       const script = join(pkgRoot, 'scripts', 'rag_chat.py')
       const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
-      if (!['wiki', 'chat', 'all'].includes(opts.line)) {
-        console.log(chalk.red('line 必须是 wiki、chat 或 all'))
-        process.exit(1)
-      }
+      requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
       const preview = {
         success: true,
         dryRun: true,
