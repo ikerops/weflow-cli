@@ -27,6 +27,7 @@ import { applyDerivedNtKeys, enableFavorites, detectFavDbPath } from '../src/ser
 import type { ChatSession } from '../src/types.js'
 import { disabledIds, describeSkill, readSkillBody, scanSkills, skillRoots, skillState } from '../src/services/assistantSkills.js'
 import { assistantScenes, validateSceneId, type Scene } from '../src/services/assistantScenes.js'
+import { detectWechatClient } from '../src/services/wechatClient.js'
 
 const program = new Command()
 
@@ -7336,6 +7337,9 @@ program
         daemonAlive = isDaemonAlive().alive
       } catch {}
       const engine = String(configService.get('aiEngine') || 'deepseek')
+      // 微信客户端版本：判据是**活进程命令行的 `--user-lib-dir`**（见 `wechatClient.ts` 里那段），
+      // 不是 exe 里的版本字面量（那个只是兜底），也不是"磁盘上有没有这个目录"。
+      const client = await detectWechatClient()
       const data = {
         success: true,
         schema: 'weflow-check/v1',
@@ -7365,6 +7369,15 @@ program
           aiConfigured: ['ollama', 'lmstudio'].includes(engine) || !!configService.get('deepseekApiKey'),
           messageChannelLoggedIn: !!configService.get('wechatOcToken'),
           daemonRunning: daemonAlive,
+        },
+        // `version` 只从活进程取；取不到就是 null + 一句 `note`（**不是**"没问题"）。
+        // `unusableVersionDirs` 是磁盘上的残留版本目录（没有 `Weixin.dll`）—— 指向它们的加载会失败。
+        wechatClient: {
+          running: client.running,
+          version: client.version,
+          loadedDirs: client.loadedDirs,
+          note: client.note,
+          unusableVersionDirs: client.unusableVersionDirs,
         },
       }
       console.log(JSON.stringify(data, null, 2))
@@ -7450,7 +7463,21 @@ program
       }
     }
 
-    // 6. Assistant (第二大脑)
+    // 6. 微信客户端版本
+    console.log(chalk.white('\n微信客户端:'))
+    const client = await detectWechatClient()
+    if (client.version) {
+      console.log(chalk.green(`  ✓ 运行时加载 ${client.version}`) + chalk.gray(` (${client.loadedDirs[0]})`))
+    } else {
+      // **说"未知"而不是"没问题"**：取不到就说取不到，别给人一个假的安心
+      console.log(chalk.gray(`  ○ 版本未知 — ${client.note}`))
+    }
+    for (const dead of client.unusableVersionDirs) {
+      console.log(chalk.yellow(`  ! 残留版本目录 ${dead.dir}：只剩 ${dead.files} 个文件（没有 Weixin.dll）`))
+      console.log(chalk.gray('    指向它的加载会失败；如果客户端起不来，先看这里'))
+    }
+
+    // 7. Assistant (第二大脑)
     console.log(chalk.white('\n第二大脑 Agent:'))
     const aiKey = configService.get('deepseekApiKey')
     const aiBase = configService.get('aiBaseUrl')

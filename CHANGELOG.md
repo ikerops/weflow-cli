@@ -19,6 +19,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`check` and `health_check` now report which WeChat build is actually loaded.** They reported the database
+  format ("4.x") but never the client version, which is the first thing to ask when data refuses to load. The
+  version comes from the **live process's `--user-lib-dir`** (the only place that knows it - the parameter does
+  not appear in `Weixin.exe` at all), *not* from the version literal inside the executable: that literal is a
+  fallback used only when the primary load path fails, and on this machine it matches the directory by
+  coincidence, so reading it would look right and be wrong. The same check flags **version directories that
+  cannot work**: a usable one must contain `Weixin.dll`, and this machine still carries a leftover `4.1.15.11\`
+  holding a single file - pointing a load at it fails. When the client is not running the row says **unknown**
+  rather than green-and-fine, and a `check --json` that lacks the whole field counts as a **failure** (that
+  means the build is stale - which is exactly how this row first failed, before `npm run build`).
 - **The 2D knowledge graph shows names again when you click a concept.** Focusing a node dims everything else and is
   supposed to make "who is it connected to" visible - but the label pass only ever considered nodes *outside* the
   highest-degree batch, so clicking a hub (in a small graph: clicking anything) drew **no names at all** while the

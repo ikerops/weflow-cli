@@ -10,6 +10,8 @@ thing has silently broken at least once, and the failure was invisible:
   导出格式         excel 全程从未成功过, 报错只有"导出失败"四个字
   Python 依赖     缺 sqlcipher3 时命令报的是"数据库连接失败"
   计划任务        提醒脚本静默停跑, 没人会发现
+  微信客户端      从没报过客户端版本; 而"读 exe 里的版本字面量"是错的判据(实测那只是兜底),
+                  磁盘上还可能留着一个不能用的版本目录(指向它的加载会失败)
 
 Run it ad hoc, or schedule it and read the summary line:
 
@@ -302,6 +304,39 @@ def check_scheduled_tasks(report):
         report.add('计划任务', True, '均在位且上次成功')
 
 
+def check_wechat_client(report):
+    """**微信客户端版本**，以及磁盘上有没有"不能用的版本目录"。
+
+    判据在 CLI 那一侧（`src/services/wechatClient.ts`）：版本来自**活进程命令行的
+    `--user-lib-dir`** —— 不是 exe 里的版本字面量（实测那只是兜底），也不是"磁盘上有没有
+    这个版本目录"（本机就有一个只剩 1 个文件的残留目录，指向它的加载会失败）。
+
+    取不到就写"未知"，**不写"没问题"**：与仓库里那条"没找到必须报 UNKNOWN，别报 CLEAR"同一条纪律。
+    字段整个不在 = CLI 是该重建的旧版本 ⇒ **不算通过**（这正是"打开成功≠能用"那一类：
+    少了一项却一片绿）。
+    """
+    _, data = run_json(['check'])
+    if not data:
+        report.add('微信客户端', False, 'check 未返回 JSON', '先跑 weflow-cli check 看原始输出')
+        return
+    client = data.get('wechatClient')
+    if not isinstance(client, dict):
+        report.add('微信客户端', False, 'check 没报这一项',
+                   'CLI 可能没重新构建（npm run build），或 dist 是旧的')
+        return
+    version = client.get('version')
+    loaded = client.get('loadedDirs') or []
+    if version:
+        detail = str(version) + (f'（{loaded[0]}）' if loaded else '')
+    else:
+        detail = '未知 —— ' + str(client.get('note') or '')
+    dead = client.get('unusableVersionDirs') or []
+    if dead:
+        shown = '、'.join(f'{d.get("dir")}({d.get("files")} 个文件)' for d in dead)
+        detail += f'　⚠ 残留版本目录（没有 Weixin.dll，加载会失败）: {shown}'
+    report.add('微信客户端', True, detail)
+
+
 def main():
     parser = argparse.ArgumentParser(description='weflow-cli periodic health check')
     parser.add_argument('--json', action='store_true', help='机器可读输出')
@@ -314,6 +349,7 @@ def main():
     report = Report()
     check_version(report)
     check_environment(report)
+    check_wechat_client(report)
     check_python_deps(report)
     check_session_freshness(report)
 

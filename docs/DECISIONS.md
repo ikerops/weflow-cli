@@ -7,6 +7,9 @@
 > `D-056`~`D-058` 原本写在**另一条分支** `feat/assistant-skills-scenes-tool-surface` 上（技能包/场景/工具面那三条），
 > 而 `D-059`（悬浮球的眼睛跟随）写在 `feat/panel-eye-follow` 上。本分支当时为避免合并时撞号，直接从 `D-055` 跳到 `D-059`。
 > 两条分支已在同一次合并里并入 `master`（2026-09-30），所以现在 `D-055`~`D-059` 五个号都在，没有空号。
+> **证据分级（2026-10-11 起）**：新条目的每条结论请标 **【实测】/【推断】/【未知】**，被推翻的结论就地标注
+> 而不是删掉 —— 这是借自一份实测的启动器逆向报告的做法（它靠这一栏把"两处自我更正"留在了原地，
+> 那两处都是**先写错、后被自己的证据推翻**的）。旧条目没有回溯补标。
 
 ## D-001: Local-first data handling
 
@@ -1402,6 +1405,40 @@ which is what the gate is for.
 - Group chats are out of scope (the reference implementation documents the same limit, and local group
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
+
+## D-107: 报"客户端运行时版本"，判据是活进程，不是 exe 里的字面量
+
+**Status:** Active（做法来自一份**实测的启动器逆向报告**——报告在本仓库外，含真实的开发者用户名与
+厂商内部构建路径，按仓库规矩**不进 `docs/`**；这里只落它的结论与判据）
+
+**决定。** `check` / `health_check` 新增一项**微信客户端版本**【实测】：版本取自**活进程命令行的
+`--user-lib-dir`**（`check --json` 多一个 `wechatClient` 块：`running` / `version` / `loadedDirs` /
+`note` / `unusableVersionDirs`）。三条判据写死：
+
+1. **不读 `Weixin.exe` 里的版本字面量。**【实测·报告】它确实硬编码着、而且在本机**恰好与版本目录
+   同名** —— 但它只是**兜底**（控制流显示只有主路径加载失败才会用到它；主路径读
+   `%APPDATA%\Tencent\xwechat\update\update.data`，本机没有该文件）。报告里那条"2/2 实测"就是
+   先据此下了结论、后被控制流推翻的：**"字面量存在且与目录同名"与"它决定加载哪条路径"是两个命题。**
+2. **"磁盘上有版本目录" ≠ "它能用"。** 判据是**有没有 `Weixin.dll`**。本机 `D:\WeiXin\4.1.15.11\`
+   实测【实测】只剩 **1 个文件**（`crashpad_handler.exe`），指向它的加载会失败；`4.1.15.13\` 是
+   29 个文件 / 867.8 MB。
+3. **取不到就说未知，不算通过。** 客户端没在跑、或进程都没带这个参数 ⇒ `version: null` + 一句
+   `note`；`health_check` 那一项仍算 OK 但**明细里写"未知"**（客户端没开不是故障）。而
+   **`wechatClient` 字段整个不在 ⇒ 判不通过**【实测】：那意味着 `cli.cjs`/`dist` 是**没重建**的旧版本 ——
+   这条规则在它第一次真跑时**就抓到了自己**（没 `npm run build` 之前，体检正是这么红的）。
+
+**为什么值得一条决策**：这是"一个看着会对的错判据"的标本 —— 字面量在本机 2/2 对得上，谁都不会怀疑；
+而它错的方式是**静默**的（报一个不是实际加载的那个版本）。同一个坑还有第二个面：目录**存在**不等于
+**能用**，而"存在"是最容易被当成"没问题"的那种证据。三条判据合起来是一句话：**要问的就一个 ——
+它现在到底加载了哪个**，别的来源都是替身。
+
+**验证到什么程度**【实测】：真机 `check` / `health_check` 跑出来
+`4.1.15.13（D:\WeiXin\4.1.15.13）` + `4.1.15.11(1 个文件)` 被独立判成残留（与报告 §2.3 各自独立量到同一件事）；
+`test/wechat-client.test.ts` 9 条（含"多个目录不挑一个报""非 Windows 说平台不支持""PowerShell 挂了回未知"）、
+`test/health_check_test.py` 5 条；变异检查：把"字段缺失 ⇒ 不通过"去掉 → 红。
+
+**没做的（明写）**：**没有**去解析 `update.data`（报告说它的**内部格式完全没解** ⇒ 不猜）；
+非 Windows 直接报"只做了 Windows"（不是"没问题"）；**没有**读 exe 的字面量（故意的，见判据 1）。
 
 ## D-106: 同库内消歧 —— 跨线同名的链接按名字带路径，而不是把两条线拆成两个库
 
