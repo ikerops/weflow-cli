@@ -334,6 +334,18 @@ def check_wechat_client(report):
     if dead:
         shown = '、'.join(f'{d.get("dir")}({d.get("files")} 个文件)' for d in dead)
         detail += f'　⚠ 残留版本目录（没有 Weixin.dll，加载会失败）: {shown}'
+    # 客户端自报的数据目录 vs 配置推出来的根：不一致 = 两边可能不是同一份库（CLI 那边已按真身比过，
+    # 本机数据目录有 D 盘软链，所以这里只报结论）
+    if client.get('dataDirMatchesConfig') is False:
+        detail += '　⚠ 客户端自报的数据目录与配置里那个数据库推出来的根**不是同一份**'
+    crashes = client.get('crashRecords') or {}
+    count = int(crashes.get('reports') or 0) + int(crashes.get('records') or 0)
+    if count:
+        newest = str(crashes.get('newest') or '时间读不到')[:16]
+        detail += f'　· 客户端崩溃记录 {count} 份（最近 {newest}）—— 崩过时数据读不出来先看这条'
+    # `update.data` 在场 ⇒ 上面那个版本**未必**是加载的那个：这句必须跟着版本一起出现
+    for caveat in client.get('caveats') or []:
+        detail += f'　⚠ {caveat}'
     report.add('微信客户端', True, detail)
 
 

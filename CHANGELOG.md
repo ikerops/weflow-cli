@@ -29,6 +29,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   holding a single file - pointing a load at it fails. When the client is not running the row says **unknown**
   rather than green-and-fine, and a `check --json` that lacks the whole field counts as a **failure** (that
   means the build is stale - which is exactly how this row first failed, before `npm run build`).
+  Three more signals come from the same process listing: the **data directory the client itself reports**
+  (`--wechat-files-path`, compared against the configured root *by real path*, since this machine's data
+  directory is a symlink), the client's **crash records** (count and newest timestamp only - never their
+  contents), and a caveat when `update\update.data` exists, because then the version from the command line may
+  not be the one actually loaded (that file's format is not understood, so it is stated rather than guessed).
 - **The 2D knowledge graph shows names again when you click a concept.** Focusing a node dims everything else and is
   supposed to make "who is it connected to" visible - but the label pass only ever considered nodes *outside* the
   highest-degree batch, so clicking a hub (in a small graph: clicking anything) drew **no names at all** while the

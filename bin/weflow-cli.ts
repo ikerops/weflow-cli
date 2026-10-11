@@ -27,7 +27,7 @@ import { applyDerivedNtKeys, enableFavorites, detectFavDbPath } from '../src/ser
 import type { ChatSession } from '../src/types.js'
 import { disabledIds, describeSkill, readSkillBody, scanSkills, skillRoots, skillState } from '../src/services/assistantSkills.js'
 import { assistantScenes, validateSceneId, type Scene } from '../src/services/assistantScenes.js'
-import { detectWechatClient } from '../src/services/wechatClient.js'
+import { detectWechatClient, samePath } from '../src/services/wechatClient.js'
 
 const program = new Command()
 
@@ -7314,6 +7314,22 @@ program
   .description('检查运行环境（Python、pip 依赖、数据库配置）')
   .option('--json', '输出 JSON 格式，不包含数据库路径或密钥')
   .action(async (opts) => {
+    // 微信客户端的**版本**与它自报的**数据目录**：两个分支都要用，所以在这里算一次。
+    // 判据见 `wechatClient.ts`（版本取活进程的 `--user-lib-dir`；取不到就是"未知"，不是"没问题"）。
+    const client = await detectWechatClient()
+    // 客户端自报的数据目录 vs 配置里那个数据库推出来的根：**只比是不是同一份**，
+    // 路径本身不进机器可读输出（`wechat-check/v1` 一直是不含路径的）。
+    const { dirname } = await import('node:path')
+    // **四层**：`…/xwechat_files/<wxid>/db_storage/message/message_0.db`
+    // → message → db_storage → <wxid> → xwechat_files。少一层就退到 `<wxid>` 目录，
+    // 于是两个路径永远不相等、永远报"不是同一份"（一个看着很合理的假警告）。
+    const dbPathConfigured = String(configService.get('ntDbPath') || '')
+    const configuredRoot = dbPathConfigured
+      ? dirname(dirname(dirname(dirname(dbPathConfigured))))
+      : ''
+    const dataDirMatchesConfig = (client.dataDirs.length && configuredRoot)
+      ? client.dataDirs.some(dir => samePath(dir, configuredRoot))
+      : null
     if (opts.json) {
       const { execFileSync } = await import('child_process')
       const requiredDependencies = ['sqlcipher3', 'html2text', 'zstandard', 'cryptography']
@@ -7337,9 +7353,6 @@ program
         daemonAlive = isDaemonAlive().alive
       } catch {}
       const engine = String(configService.get('aiEngine') || 'deepseek')
-      // 微信客户端版本：判据是**活进程命令行的 `--user-lib-dir`**（见 `wechatClient.ts` 里那段），
-      // 不是 exe 里的版本字面量（那个只是兜底），也不是"磁盘上有没有这个目录"。
-      const client = await detectWechatClient()
       const data = {
         success: true,
         schema: 'weflow-check/v1',
@@ -7378,6 +7391,15 @@ program
           loadedDirs: client.loadedDirs,
           note: client.note,
           unusableVersionDirs: client.unusableVersionDirs,
+          // 客户端**自己说**数据目录在哪（与配置不一致时说明两边不是同一份库）
+          dataDirs: client.dataDirs,
+          // 只报结论（true/false/null），**不带路径** —— 这条 schema 一直是不含路径的
+          dataDirMatchesConfig,
+          // `update.data` 在场 ⇒ 加载路径可能不由命令行决定：这条不确定必须跟着版本一起出去
+          updateData: client.updateData,
+          // 只报条数与最近时间（不读崩溃内容）
+          crashRecords: client.crashRecords,
+          caveats: client.caveats,
         },
       }
       console.log(JSON.stringify(data, null, 2))
@@ -7463,9 +7485,8 @@ program
       }
     }
 
-    // 6. 微信客户端版本
+    // 6. 微信客户端版本（`client` / `dataDirMatchesConfig` 在 action 开头已经算过）
     console.log(chalk.white('\n微信客户端:'))
-    const client = await detectWechatClient()
     if (client.version) {
       console.log(chalk.green(`  ✓ 运行时加载 ${client.version}`) + chalk.gray(` (${client.loadedDirs[0]})`))
     } else {
@@ -7475,6 +7496,22 @@ program
     for (const dead of client.unusableVersionDirs) {
       console.log(chalk.yellow(`  ! 残留版本目录 ${dead.dir}：只剩 ${dead.files} 个文件（没有 Weixin.dll）`))
       console.log(chalk.gray('    指向它的加载会失败；如果客户端起不来，先看这里'))
+    }
+    // `update.data` 在场时上面那个版本**未必**是加载的那个 —— 这句话要跟着它一起出现
+    for (const caveat of client.caveats) {
+      console.log(chalk.yellow(`  ⚠ ${caveat}`))
+    }
+    if (client.dataDirs.length) {
+      console.log(chalk.gray(`  · 客户端自报数据目录: ${client.dataDirs.join('、')}`))
+      if (dataDirMatchesConfig === false) {
+        // 不一致 = 两边可能不是同一份库（本机数据目录还有 D 盘软链，这条已经按真身比过）
+        console.log(chalk.yellow('    ⚠ 与配置里那个数据库推出来的根**不是同一份** —— 先确认你在读的是客户端正在写的那份'))
+      }
+    }
+    const crashes = client.crashRecords.reports + client.crashRecords.records
+    if (crashes > 0) {
+      const when = client.crashRecords.newest ? client.crashRecords.newest.slice(0, 16).replace('T', ' ') : '时间读不到'
+      console.log(chalk.gray(`  · 客户端崩溃记录 ${crashes} 份（最近 ${when}）—— 客户端崩过时数据读不出来，先看这条`))
     }
 
     // 7. Assistant (第二大脑)

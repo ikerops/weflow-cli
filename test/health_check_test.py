@@ -64,6 +64,23 @@ class WechatClientCheckTests(unittest.TestCase):
         self.assertIn('4.1.15.11', row['detail'])
         self.assertIn('1 个文件', row['detail'])
 
+    def test_数据目录不是同一份时要明说(self):
+        row = self.run_check(client(version='4.1.15.13', loadedDirs=['D:\\WeiXin\\4.1.15.13'],
+                                    dataDirMatchesConfig=False))
+        self.assertIn('不是同一份', row['detail'])
+        # 一致 / 不知道（客户端没跑）时不该出现这句话
+        self.assertNotIn('不是同一份', self.run_check(client(dataDirMatchesConfig=True))['detail'])
+        self.assertNotIn('不是同一份', self.run_check(client(dataDirMatchesConfig=None))['detail'])
+
+    def test_崩溃记录与_update_data_的不确定要带出来(self):
+        row = self.run_check(client(version='4.1.15.13', loadedDirs=['D:\\WeiXin\\4.1.15.13'],
+                                    crashRecords={'dir': 'x', 'reports': 2, 'records': 1,
+                                                  'newest': '2026-10-10T22:00:00.000Z'},
+                                    caveats=['update\\update.data 存在：加载路径可能由它决定']))
+        self.assertIn('崩溃记录 3 份', row['detail'])
+        self.assertIn('2026-10-10', row['detail'])
+        self.assertIn('update.data', row['detail'])
+
 
 if __name__ == '__main__':
     unittest.main()

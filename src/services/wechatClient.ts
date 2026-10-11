@@ -20,7 +20,7 @@
  * 分成"能用/不能用"（判据是**有没有 `Weixin.dll`** —— 启动器加载的就是它）。
  * 取不到就是 `null` + 一句 `note`，不拿别的来源顶替。
  */
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -33,9 +33,12 @@ export interface WechatClientProcess {
   exe: string
   /** 命令行里的 `--user-lib-dir`；进程没带就是 null（实测 `--type=xplayer` 那个不带）。 */
   loadedDir: string | null
+  /** 命令行里的 `--wechat-files-path`：客户端自己说数据目录在哪（小程序那组进程会带）。 */
+  dataDir: string | null
 }
 
-export interface WechatClientFacts {
+/** 版本的判据与结论 —— 只跟"哪个进程加载了哪个目录"有关，读不到**别的来源**。 */
+export interface WechatVersionFacts {
   /** 本机有没有在跑的 `Weixin.exe`（没跑 ⇒ 版本未知，不是"没问题"）。 */
   running: boolean
   /** 去重后的实际加载目录，按出现顺序。 */
@@ -48,6 +51,17 @@ export interface WechatClientFacts {
   unusableVersionDirs: Array<{ dir: string; files: number }>
 }
 
+export interface WechatClientFacts extends WechatVersionFacts {
+  /** 进程命令行里的 `--wechat-files-path`：**客户端自己说**数据目录在哪。 */
+  dataDirs: string[]
+  /** `update\update.data` 在不在（在 ⇒ 加载路径可能不由命令行决定；见 `caveats`）。 */
+  updateData: { path: string; present: boolean }
+  /** 客户端崩溃记录：只报条数与最近时间，**不读内容**。 */
+  crashRecords: { dir: string; reports: number; records: number; newest: string | null }
+  /** 读这个版本时**必须一起说出去**的不确定（目前只有一条：`update.data` 在场）。 */
+  caveats: string[]
+}
+
 /** 版本目录名：`4.1.15.13` 这种。别的一律不当版本目录（不猜）。 */
 const VERSION_DIR = /^\d+(\.\d+)+$/
 
@@ -58,7 +72,10 @@ const VERSION_DIR = /^\d+(\.\d+)+$/
  * 那是仓库既有做法，不引第二种。`ConvertTo-Json` 在只有一个结果时会给对象而不是数组，
  * 所以下面 `parseProcessRows` 两种都收。
  */
-const PS_LIST = "$p = Get-CimInstance Win32_Process -Filter \"Name='Weixin.exe'\" | "
+// **两个镜像名都要问**：`--user-lib-dir` 在 `Weixin.exe` 那组上，而 `--wechat-files-path`
+// 只在 `WeChatAppEx.exe`（小程序运行时那组）的命令行上（实测：拿它去筛 `Weixin.exe` 会一条都取不到，
+// 于是"客户端自报数据目录"这一项**永远是空的**而看不出来）。版本那一支只认 `Weixin.exe`（见 `summarize`）。
+const PS_LIST = "$p = Get-CimInstance Win32_Process -Filter (\"Name='Weixin.exe' or Name='WeChatAppEx.exe'\") | "
   + 'Select-Object ProcessId, ExecutablePath, CommandLine; '
   + 'if ($p) { $p | ConvertTo-Json -Compress }'
 
@@ -78,10 +95,12 @@ export function parseProcessRows(raw: string): WechatClientProcess[] {
     const r = row as Record<string, unknown>
     const pid = Number(r.ProcessId)
     if (!Number.isFinite(pid)) continue
+    const commandLine = String(r.CommandLine || '')
     out.push({
       pid,
       exe: String(r.ExecutablePath || ''),
-      loadedDir: userLibDir(String(r.CommandLine || '')),
+      loadedDir: userLibDir(commandLine),
+      dataDir: wechatFilesPath(commandLine),
     })
   }
   return out
@@ -99,6 +118,80 @@ export function userLibDir(commandLine: string): string | null {
   if (!m) return null
   const value = (m[1] || m[2] || m[3] || '').trim().replace(/["']/g, '')
   return value || null
+}
+
+/**
+ * 从命令行里取 `--wechat-files-path`：**客户端自己说数据目录在哪**。
+ *
+ * 用处在排查：它和配置里的数据目录不一致时，说明两边指向的不是同一份库（本机数据目录
+ * 还有 D 盘软链，同一份库两条路径）。只报出来，**不拿它去改配置**。
+ */
+export function wechatFilesPath(commandLine: string): string | null {
+  const m = /--wechat-files-path\s*=\s*(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(String(commandLine || ''))
+  if (!m) return null
+  const value = (m[1] || m[2] || m[3] || '').trim().replace(/["']/g, '')
+  return value || null
+}
+
+/** 客户端崩溃记录：只数文件、只取最近时间，**不读任何内容**。 */
+export function crashSummary(root: string): WechatClientFacts['crashRecords'] {
+  const reports = countFiles(join(root, 'reports'))
+  const records = countFiles(join(root, 'records')) + countFiles(join(root, 'metadata'))
+  let newest: string | null = null
+  try {
+    for (const sub of ['reports', 'records', 'metadata']) {
+      const dir = join(root, sub)
+      if (!existsSync(dir)) continue
+      for (const name of readdirSync(dir)) {
+        const at = statSync(join(dir, name)).mtime
+        if (!newest || at > new Date(newest)) newest = at.toISOString()
+      }
+    }
+  } catch {
+    // 读不到时间就给 null —— 不拿当前时间顶替（那会造出一个假的"最近崩溃"）
+  }
+  return { dir: root, reports, records, newest }
+}
+
+function countFiles(dir: string): number {
+  try {
+    return readdirSync(dir).filter(name => {
+      try {
+        return statSync(join(dir, name)).isFile()
+      } catch {
+        return false
+      }
+    }).length
+  } catch {
+    return 0
+  }
+}
+
+/** 两条路径是不是同一个位置。**按真身比**：本机数据目录有 D 盘软链，同一份库有两条路径。 */
+export function samePath(a: string, b: string): boolean {
+  try {
+    return realpathSync(a).toLowerCase() === realpathSync(b).toLowerCase()
+  } catch {
+    return false
+  }
+}
+
+/** `%APPDATA%\Tencent\xwechat` —— 崩溃记录与 `update.data` 都在这棵树下。 */
+export function xwechatRoot(appData: string | undefined = process.env.APPDATA): string | null {
+  return appData ? join(appData, 'Tencent', 'xwechat') : null
+}
+
+/**
+ * `update.data` 在场时**必须一起说出去**的那句话。
+ *
+ * 报告把这条明确留成未解："若该文件存在，exe 侧第一次 `LoadLibraryExW` 就会用它，
+ * 根本不会看命令行 —— 两条路谁优先【未知】"。所以这个函数的存在意义是：
+ * 别让新报出去的那个版本在那种机器上**悄悄变成错的**。
+ */
+export function updateDataCaveats(present: boolean): string[] {
+  if (!present) return []
+  return ['update\\update.data 存在：加载路径**可能**由它决定，命令行给的版本未必是实际加载的那个'
+    + '（那份逆向没解开它的内部格式，也没判定两条路谁优先）']
 }
 
 /** 一个版本目录能不能用：**有没有 `Weixin.dll`**（启动器加载的就是它）。 */
@@ -138,12 +231,17 @@ export function versionDirsUnder(installRoot: string): ReturnType<typeof classif
   return classifyVersionDirs(entries)
 }
 
-export function summarize(processes: WechatClientProcess[], unusable: Array<{ dir: string; files: number }>): WechatClientFacts {
+export function summarize(processes: WechatClientProcess[],
+                          unusable: Array<{ dir: string; files: number }>): WechatVersionFacts {
   // 去重按**规范形**（去掉尾部分隔符、大小写折叠 —— Windows 路径大小写不敏感）：
   // 同一个目录写成 `D:\WeiXin\4.1.15.13` 与 `…\4.1.15.13\` 是**一个**目录，
   // 不折算的话会被当成"两个进程指向不同目录"从而拒绝给出版本号。
+  // **版本只跟 `Weixin.exe` 有关**：`WeChatAppEx.exe`（小程序那组）与它在同一张进程表里
+  // （后者的命令行上带着 `--wechat-files-path`），但它不加载 `Weixin.dll` —— 拿它的
+  // "没带 `--user-lib-dir`"去说事会把"客户端在跑、版本取得到"讲成"取不到"。
+  const launchers = processes.filter(p => basename(p.exe).toLowerCase() === 'weixin.exe')
   const seen = new Map<string, string>()
-  for (const p of processes) {
+  for (const p of launchers) {
     if (!p.loadedDir) continue
     const shown = p.loadedDir.replace(/[\\/]+$/, '')
     if (!shown) continue
@@ -153,10 +251,10 @@ export function summarize(processes: WechatClientProcess[], unusable: Array<{ di
   const loadedDirs = [...seen.values()]
   let version: string | null = null
   let note = ''
-  if (!processes.length) {
+  if (!launchers.length) {
     note = '客户端没在运行 ⇒ 版本未知（`--user-lib-dir` 只有进程知道）'
   } else if (!loadedDirs.length) {
-    note = `在跑 ${processes.length} 个进程，但命令行里都没有 --user-lib-dir`
+    note = `在跑 ${launchers.length} 个进程，但命令行里都没有 --user-lib-dir`
   } else if (loadedDirs.length > 1) {
     // **不猜**：多个目录各有各的来源（子进程可以指到不同的库），挑一个报出去就是编。
     // 目录本身照旧列出来（那是实测到的），只是不给"版本号"这个单一结论。
@@ -188,9 +286,15 @@ const defaultRunner: PowershellRunner = async (command) => {
  * 非 Windows 直接返回"平台不支持"（`Get-CimInstance` 是 Windows 的），**不是**返回"没问题"。
  */
 export async function detectWechatClient(run: PowershellRunner = defaultRunner): Promise<WechatClientFacts> {
+  const root = xwechatRoot()
+  const nothing: WechatClientFacts = {
+    running: false, loadedDirs: [], version: null, note: '', unusableVersionDirs: [],
+    dataDirs: [], updateData: { path: root ? join(root, 'update', 'update.data') : '', present: false },
+    crashRecords: { dir: root ? join(root, 'crashinfo') : '', reports: 0, records: 0, newest: null },
+    caveats: [],
+  }
   if (process.platform !== 'win32') {
-    return { running: false, loadedDirs: [], version: null,
-             note: `判版本只做了 Windows（当前平台 ${process.platform}）`, unusableVersionDirs: [] }
+    return { ...nothing, note: `判版本只做了 Windows（当前平台 ${process.platform}）` }
   }
   let raw = ''
   try {
@@ -199,8 +303,26 @@ export async function detectWechatClient(run: PowershellRunner = defaultRunner):
     raw = ''
   }
   const processes = parseProcessRows(raw)
-  // 安装根从进程的可执行路径推（**别去猜**：注册表/常见路径都不可靠，报告实测注册表 InstallPath 是空的）
-  const roots = [...new Set(processes.map(p => dirname(p.exe)).filter(dir => dir && existsSync(dir)))]
-  const unusable = roots.flatMap(root => versionDirsUnder(root).unusable)
-  return summarize(processes, unusable)
+  // 安装根从**启动器**的可执行路径推（**别去猜**：注册表/常见路径都不可靠，报告实测注册表
+  // InstallPath 是空的）。只取 `Weixin.exe` 的目录：小程序的目录是插件目录，那里的版本号
+  // 子目录不是客户端版本。
+  const roots = [...new Set(processes
+    .filter(p => basename(p.exe).toLowerCase() === 'weixin.exe')
+    .map(p => dirname(p.exe))
+    .filter(dir => dir && existsSync(dir)))]
+  const unusable = roots.flatMap(r => versionDirsUnder(r).unusable)
+  const version = summarize(processes, unusable)
+
+  // `update.data` 在场 ⇒ **它可能才是决定加载路径的那个**，命令行给的版本就未必是加载的那个。
+  // 报告把这条明确留成未解（"两条路谁优先 —— 【未知】"），所以这里**不猜**：只说存在，
+  // 并把不确定性跟着版本一起带出去（否则新报的这个版本会在那种机器上悄悄变成错的）。
+  const updateFile = nothing.updateData.path
+  const present = !!updateFile && existsSync(updateFile)
+  return {
+    ...version,
+    dataDirs: [...new Set(processes.map(p => p.dataDir).filter((d): d is string => !!d))],
+    updateData: { path: updateFile, present },
+    crashRecords: crashSummary(nothing.crashRecords.dir),
+    caveats: updateDataCaveats(present),
+  }
 }

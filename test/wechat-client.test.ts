@@ -19,8 +19,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  classifyVersionDirs, detectWechatClient, parseProcessRows, summarize, userLibDir, versionDirsUnder,
+  classifyVersionDirs, crashSummary, detectWechatClient, parseProcessRows, summarize,
+  updateDataCaveats, userLibDir, versionDirsUnder, wechatFilesPath, xwechatRoot,
 } from '../src/services/wechatClient.js'
+
+/** 进程画像的默认值，省得每处都写 `dataDir`。 */
+const proc = (pid: number, loadedDir: string | null, dataDir: string | null = null) =>
+  ({ pid, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir, dataDir })
 
 test('命令行里取 --user-lib-dir：带引号、不带引号、带空格都要认', () => {
   assert.equal(userLibDir('"D:\\WeiXin\\Weixin.exe" --user-lib-dir="D:\\WeiXin\\4.1.15.13" --no-sandbox'),
@@ -80,8 +85,8 @@ test('磁盘上讲一遍：安装根下哪些版本目录能用、哪些是残�
 
 test('多个进程指向不同目录：列出来，但不给一个"版本号"', () => {
   const facts = summarize([
-    { pid: 1, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir: 'D:\\WeiXin\\4.1.15.13' },
-    { pid: 2, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir: 'C:\\微信\\Weixin\\4.1.13.12' },
+    proc(1, 'D:\\WeiXin\\4.1.15.13'),
+    proc(2, 'C:\\微信\\Weixin\\4.1.13.12'),
   ], [])
   assert.equal(facts.version, null)
   assert.deepEqual(facts.loadedDirs, ['D:\\WeiXin\\4.1.15.13', 'C:\\微信\\Weixin\\4.1.13.12'])
@@ -94,7 +99,7 @@ test('没在跑 / 都没带参数：版本是 null 且说清为什么（不是"�
   assert.equal(idle.version, null)
   assert.match(idle.note, /没在运行/)
 
-  const noFlag = summarize([{ pid: 1, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir: null }], [])
+  const noFlag = summarize([proc(1, null)], [])
   assert.equal(noFlag.running, true)
   assert.equal(noFlag.version, null)
   assert.match(noFlag.note, /都没有 --user-lib-dir/)
@@ -102,8 +107,8 @@ test('没在跑 / 都没带参数：版本是 null 且说清为什么（不是"�
 
 test('正常一台：版本就是加载目录的名字，且重复的目录只算一次', () => {
   const facts = summarize([
-    { pid: 1, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir: 'D:\\WeiXin\\4.1.15.13' },
-    { pid: 2, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir: 'D:\\WeiXin\\4.1.15.13\\' },
+    proc(1, 'D:\\WeiXin\\4.1.15.13'),
+    proc(2, 'D:\\WeiXin\\4.1.15.13\\'),
   ], [])
   assert.equal(facts.version, '4.1.15.13')
   assert.equal(facts.note, '')
@@ -126,4 +131,49 @@ test('detectWechatClient：PowerShell 报错时回"未知"，不抛也不假装�
   assert.equal(facts.version, null)
   assert.equal(facts.running, false)
   assert.match(facts.note, /没在运行/)
+})
+
+test('命令行里取 --wechat-files-path：客户端自己说数据目录在哪', () => {
+  assert.equal(wechatFilesPath('WeChatAppEx.exe --wechat-files-path="D:\\微信\\xwechat_files"'),
+    'D:\\微信\\xwechat_files')
+  assert.equal(wechatFilesPath('x --wechat-files-path=D:\\a'), 'D:\\a')
+  assert.equal(wechatFilesPath('x --type=renderer'), null)
+  assert.equal(wechatFilesPath(''), null)
+})
+
+test('崩溃记录：只数条数与最近时间，不读内容；目录不在时不许拿当前时间顶替', () => {
+  const root = mkdtempSync(join(tmpdir(), 'crashinfo-'))
+  try {
+    mkdirSync(join(root, 'reports'))
+    mkdirSync(join(root, 'records'))
+    mkdirSync(join(root, 'metadata'))
+    writeFileSync(join(root, 'reports', 'a.dmp'), 'x')
+    writeFileSync(join(root, 'metadata', 'b'), 'x')
+    const got = crashSummary(root)
+    assert.equal(got.reports, 1)
+    assert.equal(got.records, 1, 'records + metadata 一起数')
+    assert.ok(got.newest, '拿到最近时间')
+
+    const empty = crashSummary(join(root, 'nope'))
+    assert.deepEqual({ reports: empty.reports, records: empty.records, newest: empty.newest },
+      { reports: 0, records: 0, newest: null },
+      'newest 必须是 null —— 拿当前时间顶替会造出一个假的"最近崩溃"')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('update.data 在场时，必须把"版本未必是它"这句话一起带出去', () => {
+  assert.deepEqual(updateDataCaveats(false), [])
+  const caveats = updateDataCaveats(true)
+  assert.equal(caveats.length, 1)
+  assert.match(caveats[0], /未必是实际加载的那个/)
+})
+
+test('xwechat 根从 APPDATA 推；没有 APPDATA 就返回 null（不猜）', () => {
+  assert.equal(xwechatRoot('C:\\Users\\x\\AppData\\Roaming'),
+    join('C:\\Users\\x\\AppData\\Roaming', 'Tencent', 'xwechat'))
+  // 用**空串**表达"没有 APPDATA"：传 `undefined` 会命中默认参数（拿真的环境变量），
+  // 那是这个函数想要的行为，但它测不出"没有 APPDATA"这一支。
+  assert.equal(xwechatRoot(''), null)
 })
