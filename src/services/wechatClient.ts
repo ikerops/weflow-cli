@@ -14,7 +14,7 @@
  *   写错、后被控制流推翻的。）
  * - 正确的判据是**活进程命令行里的 `--user-lib-dir`** —— 那是真的被加载的那个目录。
  * - 而"磁盘上有个版本目录"**不代表它能用**：本机 `D:\WeiXin\4.1.15.11\` 是升级残留，
- *   只剩 `crashpad_handler.exe` 一个文件（实测 1 个文件 / 2.1 MB），指向它的加载会失败。
+ *   只剩 `crashpad_handler.exe` 一个文件（**本机实测** 1 个文件 / 2.1 MB；报告 §2.3 记了同一件事）。
  *
  * 所以这个模块只做两件事，且都**不猜**：从进程命令行取实际目录；把一个安装根下的版本目录
  * 分成"能用/不能用"（判据是**有没有 `Weixin.dll`** —— 启动器加载的就是它）。
@@ -31,7 +31,7 @@ const execFileAsync = promisify(execFile)
 export interface WechatClientProcess {
   pid: number
   exe: string
-  /** 命令行里的 `--user-lib-dir`；进程没带就是 null（实测 `--type=xplayer` 那个不带）。 */
+  /** 命令行里的 `--user-lib-dir`；进程没带就是 null（**逆向报告实测**：`--type=xplayer` 那个不带）。 */
   loadedDir: string | null
   /** 命令行里的 `--wechat-files-path`：客户端自己说数据目录在哪（小程序那组进程会带）。 */
   dataDir: string | null
@@ -77,7 +77,7 @@ const VERSION_DIR = /^\d+(\.\d+)+$/
  * 所以下面 `parseProcessRows` 两种都收。
  */
 // **两个镜像名都要问**：`--user-lib-dir` 在 `Weixin.exe` 那组上，而 `--wechat-files-path`
-// 只在 `WeChatAppEx.exe`（小程序运行时那组）的命令行上（实测：拿它去筛 `Weixin.exe` 会一条都取不到，
+// 只在 `WeChatAppEx.exe`（小程序运行时那组）的命令行上（**本机实测**：拿它去筛 `Weixin.exe` 会一条都取不到，
 // 于是"客户端自报数据目录"这一项**永远是空的**而看不出来）。版本那一支只认 `Weixin.exe`（见 `summarize`）。
 const PS_LIST = "$p = Get-CimInstance Win32_Process -Filter (\"Name='Weixin.exe' or Name='WeChatAppEx.exe'\") | "
   + 'Select-Object ProcessId, ExecutablePath, CommandLine; '
@@ -115,8 +115,8 @@ export function parseProcessRows(raw: string): WechatClientProcess[] {
  * 从一条命令行里取 `--user-lib-dir` 的值。**两种写法都认**（`=` 与空格、带引号与不带），
  * 取不到返回 null。
  *
- * 注意这个参数**不在 `Weixin.exe` 的字符串表里**（实测 0 命中）—— 它是被加载的 DLL 自己
- * 解析的。也就是说：只有**进程**能告诉我们它，二进制里搜不到。
+ * 注意这个参数**不在 `Weixin.exe` 的字符串表里**（**逆向报告实测**：0 命中）—— 它是被加载的 DLL
+ * 自己解析的。也就是说：只有**进程**能告诉我们它，二进制里搜不到。
  */
 export function userLibDir(commandLine: string): string | null {
   const m = /--user-lib-dir\s*=\s*(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(String(commandLine || ''))
@@ -347,9 +347,11 @@ export async function detectWechatClient(run: PowershellRunner = defaultRunner):
     raw = ''
   }
   const processes = parseProcessRows(raw)
-  // 安装根从**启动器**的可执行路径推（**别去猜**：注册表/常见路径都不可靠，报告实测注册表
-  // InstallPath 是空的）。只取 `Weixin.exe` 的目录：小程序的目录是插件目录，那里的版本号
-  // 子目录不是客户端版本。
+  // 安装根从**启动器**的可执行路径推（**别去猜**：注册表与常见路径都不可靠 ——
+  // 注册表那条空的是**我们自己**的旧结论，出处是 `docs/DECISIONS.md` 里那句"`WeChat Files`
+  // 与注册表 InstallPath 都为空"（讲的是 3.x）；**别把它记成那份逆向报告的结论**，
+  // 报告里没有注册表这一段）。只取 `Weixin.exe` 的目录：小程序的目录是插件目录，
+  // 那里的版本号子目录不是客户端版本。
   const roots = [...new Set(processes
     .filter(p => basename(p.exe).toLowerCase() === 'weixin.exe')
     .map(p => dirname(p.exe))
