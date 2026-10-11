@@ -116,6 +116,25 @@ The daily workflow supports `dailyAiEnabled=false` for a persistent no-AI mode, 
 
 Date-bounded message exports and `wechat.export_messages` page through the selected conversation before applying the result limit. Older matching dates are therefore not hidden by a newer, nonmatching first page. Versioned envelopes report requested bounds, returned count, and conservative `mayHaveMore` metadata. `sync` adds a local checkpoint on top of the same overlapping-window approach, but **a stable incremental cursor is still not exposed** - it must be supported by every relevant database backend before it is advertised (D-027), and `capabilities --json` reports `stableCursor: false` for both.
 
+## Not Verified (and what closing it would take)
+
+Same shape as the launcher reverse-engineering report's closing section ("what we could not do, and why"): an
+unverified claim gets written down **once**, together with the price of closing it, so it is not rediscovered every
+few weeks. Each row is an index entry - the measurements and the reasoning live in the decision it names.
+
+| Not verified | Why not here | What closing it would take |
+| --- | --- | --- |
+| The **semantic (vector) search path** (D-105) | The index has never existed on this machine, and building one needs `dashscopeApiKey` **and** spends embedding credit - so the per-line mask is pinned against a hand-made index, and the real-data checks used the keyword fallback (which is the path this machine actually takes). | One `search-index --yes`, then the same scoped checks re-run against the real index. |
+| The **3D graph viewer's own JavaScript** (D-104) | It needs WebGL and this machine has no harness for it (the 2D viewer does run for real, in jsdom); only its source shape is pinned. | A WebGL-capable runner - the software rasteriser was measured as unable to carry a scene of this size. |
+| `update\update.data`'s **internal format** (D-107) | The report reverse-engineered the loader but not this file, and the file does not exist here. When it does exist the loaded build may not be the one the command line names, so `check` **states that** instead of guessing. | A machine where the file exists. |
+| The **version token ↔ dotted version** mapping (D-107) | Known pairs: `4.1.13.12 → 0xF2541D0C`, `4.1.15.13 → 0xF2541F0D`; both carry `F254` in the high 16 bits, so the encoding is not simply the three version fields. | More (build, token) pairs, or the encoder. |
+| The MMKV stores under `%APPDATA%\Tencent\xwechat\radium\mmkv\` (D-101) | Their format holds (crc32 precondition passes; one is empty), but the only key we can construct does not open them, and the `config/` root key is random and was never captured. | **Deliberately not attempted**: the remaining route is injecting into the client process, which this repo does not do (D-101). |
+| **Why** the data root uses hard links (CONTACT_DB_SCHEMA §6.2) | The effect is measured (395 groups, 407 MB double-counted if you sum sizes); the cause is the report's `hardlink.dat` inference (multi-account / multi-version reuse) and has not been established. | Reading the client's `hardlink.dat` - format unknown. |
+| Issue #7 (HTML emoji export) | Open pending reporter verification. | The reporter's confirmation. |
+
+**What this is not**: a bug list. Everything above works on the paths this machine exercises; what is missing is
+the *evidence* for the paths it does not.
+
 ## Security Baseline
 
 - Process only data the user owns or is explicitly authorized to access.
