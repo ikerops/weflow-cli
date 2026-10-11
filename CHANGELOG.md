@@ -19,6 +19,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **The 3D graph viewer was really rendered, not just syntax-checked.** `docs/PROJECT_STATE.md` carried it as
+  unverified (it needs WebGL, and jsdom can only run the 2D viewer). `scripts/graph3d_check.mjs` now opens the
+  generated page in a GPU-backed Edge over CDP and reads the page's own `window.__viz` hook - judging by the
+  `renderer.info.render` **counters** (how many points and lines the GPU was actually handed), not by pixels (a
+  WebGL canvas is black outside the frame, so a screenshot proves nothing) and not by frame rate (the page renders
+  on demand, so an idle `requestAnimationFrame` yields fake triple-digit numbers - the generator says so itself).
+  Measured on `knowledge-graph-3d-core.html` (3825 nodes / 12337 links, ANGLE + RTX 5060 over D3D11): **3 draw
+  calls, 3938 points, 12337 lines**, layout 68-172 ms. Note `triangles` stays 0 - balls and links are `Points`
+  and `LineSegments`, so that counter is the wrong oracle here. It is **not** in CI (it needs a GPU browser), so
+  it is a reproducible local check rather than a regression guard; the source-shape test stays as well.
+
 - **The health check no longer calls a freshly registered task a failure.** A task that has not fired yet reports
   `SCHED_S_TASK_HAS_NOT_RUN` (`267011` / `0x41303`), and that landed in the "last run failed" branch with the hint
   "the script probably threw" - sending a new user to hunt an exception that does not exist (measured on this

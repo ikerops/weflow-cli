@@ -1641,8 +1641,15 @@ deterministic 地解析，但**未必命中你想要的那一张**"，消歧手�
 **验证到什么程度（这条撤掉的是一个安全性质，所以要写清）。**
 - 2D 视图在 jsdom + 假 canvas 上**真跑**：跨线同名的夹具下两个主键都在、图上写的是名字不是主键、
   搜这个名字会说"两条线都有"（`test/graph-2d-cli.test.ts`）；
-- 3D 视图要 WebGL，本机没有能跑它的夹具 ⇒ 只钉了源码形状（`test/graph-3d-cli.test.ts`），
-  **没有真跑过**；
+- 3D 视图要 WebGL，jsdom 跑不了 ⇒ 源码形状那条测试（`test/graph-3d-cli.test.ts`）仍然在。
+  **2026-10-11 补上了"真跑"**：`scripts/graph3d_check.mjs` 用 CDP 在**真 GPU 的 Edge** 里打开
+  生成的页面，读它自己的钩子 `window.__viz` —— 判据是 `renderer.info.render` 的**计数器**
+  （GPU 实际提交了多少 points / lines），**不是像素**（WebGL canvas 帧外永远黑，截图证明不了）、
+  **也不是帧率**（页面按需渲染，空转的 rAF 量出来是 144 fps 那种假数字）。实测
+  （`output/knowledge-graph-3d-core.html`，3825 点 / 12337 边，渲染器 ANGLE + RTX 5060 / D3D11）：
+  **3 次 draw call、3938 个点、12337 条线**（`triangles` 恒为 0 —— 球与线是 `Points`/`LineSegments`，
+  拿它当"画出来了没"的判据是错的），布局 68–172 ms，GL 提交中位 0.1 ms。
+  ⚠️ **这条不在 CI 里**（要一个装了 GPU 浏览器的机器）⇒ 它是"本机可复现的验证"，不是回归守卫。
 - 三条断言做过**变异检查**（主键退回 stem、`n.name` 退回 `n.id`、改一个标签字）——都真的会红；
 - MCP 的 `wechat.get_concept` 用**真库**手工调过：36 个同名概念每个都会说出"两条线都有"并指明
   给的是哪一张；1491 个只在聊天线有的名字**不多嘴**（这条没有变成常驻测试——那些目录是模块级

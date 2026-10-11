@@ -46,7 +46,7 @@ function packedPaths(): Set<string> {
   return cached
 }
 
-test('scripts/ 下每个跟踪文件都进包（.ts 开发入口除外）', () => {
+test('scripts/ 下每个跟踪文件都进包（.ts/.mjs 开发入口除外）', () => {
   const packed = packedPaths()
   const tracked = run('git', ['-c', 'core.quotePath=false', 'ls-files', '-z', '--', 'scripts'])
     .split('\0').filter(Boolean)
@@ -55,7 +55,12 @@ test('scripts/ 下每个跟踪文件都进包（.ts 开发入口除外）', () =
   assert.ok(tracked.length > 20, `只列出 ${tracked.length} 个 scripts/ 文件，扫描范围不对`)
   // `.ts` 不进包是结构性的：它们由 `tsx` 跑（`npm run eval:assistant` 等），而 tsx 是
   // devDependency —— 装好的包里根本没有让它们跑起来的前提，所以它们不需要进包。
-  const missing = tracked.filter(file => !packed.has(file) && !file.endsWith('.ts'))
+  // `.ts` 不进包是结构性的：它们由 `tsx` 跑（`npm run eval:assistant` 等），而 tsx 是 devDependency
+  // ⇒ 装好的包里没有让它们跑起来的前提。
+  // `.mjs` 是另一类：`scripts/graph3d_check.mjs` 是**验证工具**（要一个装好 GPU 浏览器、且已经
+  // 生成过页面的环境才用得上），不是用户会用到的东西 —— 不进包是有意的，不是漏了。
+  const missing = tracked.filter(file => !packed.has(file)
+    && !file.endsWith('.ts') && !file.endsWith('.mjs'))
   assert.deepEqual(missing, [], `scripts/ 下有跟踪文件没进包，装出来就缺它：${missing.join('、')}`)
 })
 
