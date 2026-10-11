@@ -148,27 +148,42 @@ def pick_talkers(report):
     return [s['username'] for s in ordered[:2] if s.get('username')]
 
 
+def read_newest_json(out_dir):
+    """那个目录里 json 导出的最新消息时间（秒）；读不出来给 None。"""
+    newest = None
+    for path in Path(out_dir).glob('*.json'):
+        try:
+            rows = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        times = [int(r.get('createTime') or 0) for r in rows]
+        if times:
+            newest = max(times)
+            break
+    return newest
+
+
 def check_read_paths(report, talker):
     """`export json` and `export html` read the same chat by different code.
 
     They disagreed by 1114 messages when the JSON path read only the first
     shard, so comparing their newest message is the cheapest way to notice the
     read paths drifting apart again.
+
+    **但"最新消息"是会动的**：json 先导、html 后导，中间隔着一两分钟 —— 这期间聊天里来了
+    一条新消息，两条路径就会"不一致"，而那是**聊天活着**，不是读取断了。原来判据是精确到分钟
+    的相等（2026-10-11 实测撞到过：`json 13:38 / html 13:40:14` 判红，紧接着同一条聊天
+    `13:40 vs 13:40:14` 判绿）。放宽容差解决不了：繁忙的群里分片轮转本来就在分钟级，
+    放宽就会把这个检查唯一要抓的东西放过去。
+
+    所以不一致时**再读一次 json 做仲裁**：那一读能看到 html 那条 ⇒ 差别来自"消息是新的"；
+    看不到 ⇒ 两条路径真的不一致（这才是要报的）。仲裁只在**本来就不一致**时才花这一次导出。
     """
     with tempfile.TemporaryDirectory(prefix='wf-health-') as tmp:
         out_json = Path(tmp) / 'json'
         code_j, err_j = run(['export', talker, 'json', '--limit', '5',
                              '--output', str(out_json), '--non-interactive'])[0::2]
-        newest_json = None
-        for path in out_json.glob('*.json'):
-            try:
-                rows = json.loads(path.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                continue
-            times = [int(r.get('createTime') or 0) for r in rows]
-            if times:
-                newest_json = max(times)
-                break
+        newest_json = read_newest_json(out_json)
 
         out_html = Path(tmp) / 'html'
         code_h, out_h, _ = run(['export', talker, 'html', '--limit', '5',
@@ -195,14 +210,37 @@ def check_read_paths(report, talker):
         return
 
     newest_txt = datetime.datetime.fromtimestamp(newest_json).strftime('%Y-%m-%d %H:%M')
-    if newest_html:
-        match = newest_html[:16] == newest_txt
-        report.add(label, match,
-                   f'json 最新 {newest_txt} / html 最新 {newest_html}',
-                   '两条路径读到不同的最新消息，通常又只剩一个分片被读了')
-    else:
+    if not newest_html:
         # No timestamp in the page (empty chat); the count comparison still holds.
         report.add(label, total_html > 0, f'json 最新 {newest_txt} / html 共 {total_html} 条')
+        return
+
+    if newest_html[:16] == newest_txt:
+        report.add(label, True, f'json 最新 {newest_txt} / html 最新 {newest_html}')
+        return
+
+    # 不一致 —— **仲裁**：再读一次 json。它能看到 html 那条，说明差别只是"消息是新的"。
+    with tempfile.TemporaryDirectory(prefix='wf-health-arbiter-') as tmp:
+        again = Path(tmp) / 'json'
+        run(['export', talker, 'json', '--limit', '5',
+             '--output', str(again), '--non-interactive'])
+        arbiter = read_newest_json(again)
+    if arbiter is not None and arbiter >= newest_json:
+        arbiter_txt = datetime.datetime.fromtimestamp(arbiter).strftime('%Y-%m-%d %H:%M')
+        if arbiter_txt == newest_html[:16]:
+            report.add(label, True,
+                       f'json 最新 {newest_txt} → 复查 {arbiter_txt} / html 最新 {newest_html}',
+                       '差别来自检查期间来了新消息（这一项防的是"只剩一个分片被读了"）')
+            return
+
+    # 仲裁没说通（复查也没读到 html 那条，或者根本没读出来）⇒ 这是真的不一致
+    if arbiter is None:
+        reason = '复查 json 也没读出来'
+    else:
+        reason = '复查 json 仍是 %s，没有更近的消息' % \
+            datetime.datetime.fromtimestamp(arbiter).strftime('%Y-%m-%d %H:%M')
+    report.add(label, False, f'json 最新 {newest_txt} / html 最新 {newest_html}',
+               '两条路径读到不同的最新消息，通常又只剩一个分片被读了（%s）' % reason)
 
 
 def html_newest_stamp(out_dir):

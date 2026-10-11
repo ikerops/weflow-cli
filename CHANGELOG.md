@@ -19,6 +19,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`health_check` no longer calls the two read paths inconsistent just because a message arrived during the
+  check.** That row compares the newest message each path reports, and `json` runs first while `html` runs a minute
+  or two later - so a message landing in between produced exactly the symptom the row exists to catch (observed on
+  2026-10-11: `json 13:38 / html 13:40:14` failed, and the same conversation passed a minute later). Widening the
+  tolerance would hide the real thing, since shards rotate within minutes in a busy chat. Instead, when the two
+  disagree the check now **re-reads `json` and arbitrates**: if that read can see the newer message the difference
+  was liveness (passes, and says so), and if it still cannot, the row still fails - with the re-read result quoted.
+  The extra export only happens in the disagreeing case, so the common path costs nothing more.
 - **`health_check` no longer reports the scheduled tasks as "all present and last run succeeded" when it could
   not actually read the result.** That row parses the text `schtasks` prints and looks for the `Last Result` line;
   if a system language or an output-format change takes that line away, both its "failed" and its "missing" lists

@@ -9,7 +9,9 @@
   这一条**真发生过**：加完这段代码第一次跑 `health_check` 就是红的（"check 没报这一项"），
   因为 `dist` 还没重建 —— 也就是说，少了这一项却一片绿是现实里会发生的事。
 """
+import datetime
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -81,6 +83,64 @@ class WechatClientCheckTests(unittest.TestCase):
         self.assertIn('崩溃记录 3 份', row['detail'])
         self.assertIn('2026-10-10', row['detail'])
         self.assertIn('update.data', row['detail'])
+
+
+class ReadPathArbiterTests(unittest.TestCase):
+    """两条读取路径"最新消息"不一致时，**再读一次 json 做仲裁**。
+
+    判据原来精确到分钟、零容差，而 json 先导 html 后导（中间一两分钟）⇒ 检查期间来一条新消息
+    就必然假红（2026-10-11 实测撞到）。放宽容差会把这一项唯一要抓的东西（分片半读）放过去，
+    所以改成仲裁：复查能看到 html 那条 ⇒ 差别来自消息是新的；看不到 ⇒ 真的不一致。
+    """
+
+    @staticmethod
+    def ts(hour, minute, second=0):
+        return datetime.datetime(2026, 10, 11, hour, minute, second).timestamp()
+
+    def run_check(self, json_reads, html_stamp, total=5):
+        """`json_reads` 按调用顺序给出每次 json 导出的时间戳列表。"""
+        calls = []
+        queue = [list(x) for x in json_reads]
+
+        def fake_run(args):
+            calls.append(args)
+            fmt = args[2]
+            out = Path(args[args.index('--output') + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            if fmt == 'json':
+                stamps = queue.pop(0) if queue else json_reads[-1]
+                (out / 'a.json').write_text(
+                    json.dumps([{'createTime': int(t)} for t in stamps]), encoding='utf-8')
+                return (0, '', '')
+            (out / 'p.html').write_text(
+                '导出时间 %s\nTotal: %d messages\n' % (html_stamp, total), encoding='utf-8')
+            return (0, 'Total: %d messages' % total, '')
+
+        report = hc.Report()
+        with patch.object(hc, 'run', fake_run):
+            hc.check_read_paths(report, 'wxid_x')
+        self.assertEqual(len(report.rows), 1)
+        return report.rows[0], calls
+
+    def test_一致时不多花那一次导出(self):
+        row, calls = self.run_check([[self.ts(13, 40)]], '2026-10-11 13:40:14')
+        self.assertTrue(row['ok'], row['detail'])
+        self.assertEqual(len(calls), 2, '一致时只该导出两次（json + html）')
+
+    def test_不一致但复查能看到_判绿并说明原因(self):
+        row, calls = self.run_check([[self.ts(13, 38)], [self.ts(13, 40)]], '2026-10-11 13:40:14')
+        self.assertTrue(row['ok'], row['detail'])
+        self.assertIn('复查', row['detail'])
+        self.assertIn('新消息', row['hint'])
+        self.assertEqual(len(calls), 3, '不一致时才花第三次导出')
+
+    def test_复查也没看到更近的消息_判红(self):
+        row, calls = self.run_check([[self.ts(13, 38)], [self.ts(13, 38)]], '2026-10-11 13:40:14')
+        self.assertFalse(row['ok'])
+        self.assertIn('复查 json 仍是', row['hint'])
+        self.assertIn('没有更近的消息', row['hint'],
+                      '仲裁没说通时要写清"复查也没看到更新的"，而不是只说"不一致"')
+        self.assertEqual(len(calls), 3)
 
 
 class ScheduledTasksCheckTests(unittest.TestCase):
