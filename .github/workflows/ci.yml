@@ -30,6 +30,13 @@ jobs:
         continue-on-error: true
       - run: npm ci
       - run: npm run build
+      # README 的命令面是**用户先发现漂移**的地方（1.5.0：照 README 敲 `init --path` 得到
+      # `unknown option`）。这条要 cli.cjs + dist/，所以放在 build 之后；先跑判据自己的正对照，
+      # 再扫真实的 README —— 判据失灵时必须报红，而不是安静地"全绿"。
+      - name: README 命令面与 CLI 一致
+        run: |
+          python scripts/check_readme_commands.py --self-test
+          python scripts/check_readme_commands.py
       - run: npm test
 
   python:

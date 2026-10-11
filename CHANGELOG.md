@@ -17,6 +17,21 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **README commands are now checked against the real CLI, so a drifted command fails CI instead of a user.** The
+  documented failure is from `1.5.0`: 128 commits and two months of drift left the README telling people to run
+  `init --path`, which answered `unknown option`. `scripts/check_readme_commands.py` walks the CLI's own `--help`
+  output token by token and reads the `Usage:` line to decide which command was actually resolved - the exit code
+  cannot answer that, because `--help` short-circuits (`wiki <bogus> --help` prints wiki's help and exits 0, so the
+  first version of this check reported "0 problems" from a branch that could never run). It scans fenced code blocks
+  only: in prose, "manage with `weflow-cli scene`, or bind..." reads as a subcommand named `or`. A finding is either
+  a command that does not exist (a bare word right after a command that has subcommands) or a flag absent from that
+  command's help. On this repository it checks 82 commands and finds 0 mismatches - which is the interesting part,
+  given the two knowledge bases, the panel and the rest of 1.10.0 landed in between. `--self-test` carries the
+  positive controls this repository requires of a scanner (a check must be shown able to go red), and both run in the
+  CI `node` job after the build.
+
 ## 1.10.0
 
 - **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist

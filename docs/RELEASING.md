@@ -32,7 +32,12 @@ npm 包与 GitHub 分开发布，中间隔多久都不奇怪——`1.5.0` 与主
 ```powershell
 npm run build
 npm test
+py scripts/check_readme_commands.py          # README 里写的命令必须真的存在
 ```
+
+最后那条盯的是**用户先发现的那一类漂移**：`1.5.0` 与主线拉开 128 个提交时，用户照着 README 敲
+`init --path` 得到 `unknown option`。它逐级问 CLI 的 `--help`（不复刻命令表），只扫 README 的
+围栏代码块，`--self-test` 是它自己的正对照。CI 的 `node` job 每次推送都会跑这两步。
 
 ## 4. 打包检查（**不能跳过**）
 
