@@ -19,6 +19,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **`dist/` no longer ships compiled files whose source is gone.** `tsc` never prunes, so a deleted or renamed
+  source leaves `.js` / `.d.ts` / `.map` behind - and `dist/` is on the packaging allowlist, so those went out
+  as-is. An audit on 2026-10-11 found four (`dist/src/utils/wechatEmoji.*`, while `src/` had lost that file a
+  month earlier): dead weight today, but the shape of "two implementations on one module path, neither reported".
+  They are gone (the tarball goes from 547 to 543 files), and `test/pack-contents.test.ts` now fails on any `dist`
+  file whose source does not exist - mutation-checked by planting one.
+
 - **The 3D graph viewer was really rendered, not just syntax-checked.** `docs/PROJECT_STATE.md` carried it as
   unverified (it needs WebGL, and jsdom can only run the 2D viewer). `scripts/graph3d_check.mjs` now opens the
   generated page in a GPU-backed Edge over CDP and reads the page's own `window.__viz` hook - judging by the

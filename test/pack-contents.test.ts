@@ -16,7 +16,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
@@ -62,6 +62,30 @@ test('scripts/ 下每个跟踪文件都进包（.ts/.mjs 开发入口除外）',
   const missing = tracked.filter(file => !packed.has(file)
     && !file.endsWith('.ts') && !file.endsWith('.mjs'))
   assert.deepEqual(missing, [], `scripts/ 下有跟踪文件没进包，装出来就缺它：${missing.join('、')}`)
+})
+
+test('dist/ 里不许有源码已经不存在的陈旧编译产物', () => {
+  // `tsc` **从不清理**：删掉或改名的源文件会在 `dist/` 里留下 `.js` / `.d.ts` / `.map`，而 `dist/`
+  // 是打包白名单里的一项 ⇒ 它们会被原样发出去。2026-10-11 在这里审计出 4 个
+  // （`dist/src/utils/wechatEmoji.*`，而 `src/` 里一个月前就没有这个源了）—— 眼下只是死重量，
+  // 但这正是"老实现被改名后继续发布"的形状：同一个模块路径上留着两份实现，谁也不报错。
+  const distDir = join(ROOT, 'dist')
+  const walk = (dir: string, prefix: string): string[] =>
+    readdirSync(dir).flatMap(name => {
+      const full = join(dir, name)
+      return statSync(full).isDirectory() ? walk(full, `${prefix}${name}/`) : [`${prefix}${name}`]
+    })
+  const files = walk(distDir, '')
+  const js = files.filter(file => file.endsWith('.js'))
+  // 反空扫：没构建时"没有陈旧产物"是句空话（这份清单本来就是 `npm run build` 之后才有意义）
+  assert.ok(js.length > 30, `dist/ 里只有 ${js.length} 个 .js —— 先跑 \`npm run build\``)
+  const stale = files.filter(file => {
+    const base = file.replace(/\.d\.ts\.map$|\.js\.map$|\.d\.ts$|\.js$/, '')
+    if (base === file) return false
+    return !['.ts', '.mjs', '.js'].some(ext => existsSync(join(ROOT, base + ext)))
+  })
+  assert.deepEqual(stale, [],
+    `dist/ 里有源码已经不存在的编译产物（改名/删除后忘了清 dist）：${stale.join('、')}`)
 })
 
 test('README 引用的本地图片都进包', () => {
