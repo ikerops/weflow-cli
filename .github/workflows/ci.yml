@@ -37,7 +37,20 @@ jobs:
         run: |
           python scripts/check_readme_commands.py --self-test
           python scripts/check_readme_commands.py
-      - run: npm test
+      - name: npm test
+        # 失败时把挂了哪几条**发成 annotation**：日志本体存在 blob 存储上，本机那条路径
+        # 时通时断（2026-10-11 实测：`gh run view --log-failed` 连试 12 次全超时，
+        # 而 `gh run view --json` 一直能通）—— 结果就是"CI 红了 60 次、看不到红在哪"。
+        # annotation 走的是 API，本机能读（`gh run view` 会把它们打出来）。
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/weflow-test.log || {
+            echo "::error::npm test 失败——下面把失败的用例名发成 annotation（完整输出仍在本步日志里）"
+            grep -E '^not ok [0-9]+ - |^# fail |^ℹ fail ' /tmp/weflow-test.log | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          }
 
   python:
     runs-on: ubuntu-latest
