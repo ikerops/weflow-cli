@@ -327,9 +327,20 @@ def main():
     try:
         picked = collect_conversations(conns, name_map, own_wxid, args.days, args.limit)
         if not picked:
-            print('最近 %d 天没有活跃会话' % args.days)
+            # `--json` 时 stdout 必须是一整份 JSON。这条早退原来只打散文 ⇒ 机器消费者**拿不到任何
+            # 可解析的东西**（空目录/闲置机器上就会撞到）。形状与下面的 dry-run 预览一致，只是计数为 0。
+            if args.json:
+                print(json.dumps({'success': True, 'dryRun': args.dry_run,
+                                  'action': 'reply-debt.scan', 'days': args.days,
+                                  'conversations': 0, 'stateChars': 0,
+                                  'readsLocalChat': True, 'invokesAI': True,
+                                  'writesNothing': True}, ensure_ascii=False))
+            else:
+                print('最近 %d 天没有活跃会话' % args.days)
             return 0
-        print('扫描 %d 个最近 %d 天有动静的会话…\n' % (len(picked), args.days))
+        # 进度走 stderr（同文件下面两处 `file=sys.stderr` 的写法）：`--json` 时 stdout 只放结果，
+        # 这一行原来无条件打 stdout ⇒ `awaiting --dry-run --json | jq` 会断在第一个字符上。
+        print('扫描 %d 个最近 %d 天有动静的会话…\n' % (len(picked), args.days), file=sys.stderr)
 
         # 每个会话的最近若干条消息，一次读完（连接只开一次）
         transcripts = {}
@@ -389,7 +400,8 @@ def main():
                         verdict, transcripts.get(item['talker'], []))
                     verdict['evidence'] = proofs.get(item['talker'], {})
                     rows.append(verdict)
-        print('判断完成 %d/%d，耗时 %.1fs\n' % (len(rows), len(futures), time.time() - started))
+        print('判断完成 %d/%d，耗时 %.1fs\n' % (len(rows), len(futures), time.time() - started),
+              file=sys.stderr)   # 进度：`--json` 时不许进 stdout（本机跑不到这条路径，按读码改的）
     finally:
         for conn in conns:
             conn.close()
@@ -413,6 +425,8 @@ def main():
     noise = [r for r in rows if r['kind'] == '服务']
     uncertain = [r for r in rows if 0.3 <= (r['waiting'] or 0) < args.min_prob]
 
+    report_path = None      # 只有真的写了 HTML 才有值；json 模式下它会进输出
+
     if args.html:
         # 名字是外部数据，转义由 render_html 负责；这里只保证目录存在。
         target = os.path.abspath(args.html)
@@ -424,11 +438,17 @@ def main():
                 'days': args.days, 'minProb': args.min_prob,
                 'generatedAt': now.strftime('%Y-%m-%d %H:%M'),
             }))
-        print('已写出：%s（不含聊天内容，可直接分享）' % target)
+        report_path = target
+        # 人在看时打这一行；机器在看时**同一件事进 JSON**（`report` 那格）—— 只把它挪到 stderr 会
+        # 让机器消费者再也拿不到"写到哪了"，那不是修，是换一种丢。
+        if not args.json:
+            print('已写出：%s（不含聊天内容，可直接分享）' % target)
 
     if args.json:
-        print(json.dumps({'debts': debts, 'excluded_service': len(noise),
-                          'uncertain': uncertain}, ensure_ascii=False, indent=2))
+        payload = {'debts': debts, 'excluded_service': len(noise), 'uncertain': uncertain}
+        if report_path:
+            payload['report'] = report_path
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     print('=' * 62)

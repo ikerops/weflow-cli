@@ -218,6 +218,7 @@ is exactly what happened with the first attempt.
 | A panel asset is registered, whitelisted, served, and still the same character | `test/panel-packaging.test.ts`, `test/panel-lift-frames.test.ts` |
 | Interactive-menu entries match `switch` cases, and the commands they call exist | `test/cli-menu.test.ts` |
 | Every flag declared on a Python-backed command is **actually forwarded** to the script (the declaration is TS, the parsing is Python, the step between is hand-written - a dropped flag silently runs the command in its default mode) | `test/contact-schema-cli.test.ts` |
+| The row above, **upside down**: a flag forwarded in the argument list but never declared. Then the machine form is the only output, asking for it by name is `unknown option`, and the script's human mode is unreachable - nothing is dropped, so nothing looks wrong (found on `vault search` on 2026-10-11) | `test/vault-search-cli.test.ts` |
 | A knowledge source's output is readable by the wiki aggregator, links and descriptions intact | `test/chat_notes_test.py`, `test/compile_wiki_test.py` |
 | Every declaration of the concept directories agrees, and nothing that imports the constant stops iterating it | `test/concept-dirs-agreement.test.ts` |
 

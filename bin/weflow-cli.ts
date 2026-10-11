@@ -4280,20 +4280,38 @@ program
         .option('--type <type>', 'all / article / concept / note', 'all')
         .option('--line <line>', 'wiki=文章线(默认) / chat=聊天线 / all=两条都搜', 'wiki')
         .option('--top-k <n>', '返回数量', '10')
+        // 这条 `--json` 曾经**不存在，而 JSON 又是唯一的输出**：参数里硬编码着 `'--json'`，
+        // 人类模式虽然脚本里写着（`vault_search.py` 不带 `--json` 时打印带相关度的可读列表）
+        // 却没有任何入口能到达，用户显式敲 `--json` 还会拿到 `unknown option` —— 与
+        // `docs/EXTENDING.md` 那条"脚本或 AI 会驱动的命令都有 `--json` 模式"正相反。
+        // 现在按兄弟命令（`vault rag`、顶层 `search`）的形状来：默认人类可读，`--json` 才转发。
+        .option('--json', '输出 JSON 格式（含本地路径与标题，供本机脚本/AI 使用）')
         .action(async (query, opts) => {
           const pkgRoot = resolvePackageRoot()
           const script = join(pkgRoot, 'scripts', 'vault_search.py')
+          // 校验分支也要认 `--json`：否则 JSON 模式下 stdout 是一行彩色散文，脚本解析不了
+          // （`parseCliInteger` / `requireCliDate` 早就是这个约定，这里漏了）。
           if (!['all', 'article', 'concept', 'note'].includes(opts.type)) {
+            if (opts.json) {
+              console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', field: 'type',
+                                           error: 'type 必须是 all、article、concept 或 note' }))
+              process.exit(1)
+            }
             console.log(chalk.red('type 必须是 all、article、concept 或 note'))
             process.exit(1)
           }
           if (!['wiki', 'chat', 'all'].includes(opts.line)) {
+            if (opts.json) {
+              console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', field: 'line',
+                                           error: 'line 必须是 wiki、chat 或 all' }))
+              process.exit(1)
+            }
             console.log(chalk.red('line 必须是 wiki、chat 或 all'))
             process.exit(1)
           }
-          const topK = parseCliInteger(opts.topK, 'top-k', 1, 100)
+          const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
           await runPythonCmd(script, [query, '--type', opts.type, '--line', opts.line,
-                                      '--top-k', String(topK), '--json'])
+                                      '--top-k', String(topK), ...(opts.json ? ['--json'] : [])])
         })
     )
 

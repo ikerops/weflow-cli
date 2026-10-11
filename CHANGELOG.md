@@ -19,6 +19,34 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **`awaiting --json` puts its progress on stderr, so stdout is exactly one JSON object.** The scan printed two
+  progress lines unconditionally - `扫描 N 个…` and `判断完成 n/m，耗时…` - so `awaiting --dry-run --json | jq` died on
+  the first character, and the early exit ("最近 N 天没有活跃会话") answered with a bare sentence instead of JSON,
+  which is the case an idle machine hits first. Both now follow the convention the two lines below them in the same
+  file already used (`file=sys.stderr`), and the empty scan answers in the same shape as the preview with the counts
+  at zero. `--html` writes the report path into the JSON (`report`) rather than only printing `已写出：…`: moving
+  that line to stderr would have traded one loss for another, since a machine caller would no longer learn where the
+  file went. `test/reply_debt_test.py` drives the real `main()` for this - boundaries stubbed, stdout captured,
+  parsed **in full**, so one stray character fails it - and both mutations (progress back on stdout, the early exit
+  ignoring `--json`) turn it red. It needs no WeChat database, which is what lets it run in CI. Found by a
+  stdout-purity probe over 12 `--json` commands: eleven were already clean, and the twelfth is the entry below.
+
+- **`weflow-cli vault search` has a `--json` flag now - and it is no longer the only thing it can print.** The
+  action had `'--json'` hard-coded into the argument list, so the flag did not exist (asking for it answered
+  `error: unknown option '--json'`, exit 1, empty stdout) while the script's human mode - `vault_search.py` prints a
+  scored, readable list when it is *not* given the flag - was unreachable from the CLI. Even the script's own comment
+  says the JSON was a stand-in for a reader (it prints it because "CLI 直接把它打给人看"), so nobody was choosing
+  machine output on purpose. This is the `--no-rerank` entry above with the sign flipped: there the flag was
+  declared and never forwarded, here it was forwarded and never declared - and unlike that one, no doc mentioned it,
+  so the command-surface check could not have found it; only running the command does. The validation branches
+  (`--type`, `--line`) now answer in JSON when `--json` is on, the way `parseCliInteger` / `requireCliDate` already
+  do, instead of writing colored prose to stdout that a machine caller cannot parse.
+  `test/vault-search-cli.test.ts` pins it end to end - held the flag and stdout is one JSON object; the default is
+  not JSON and still says `找到 N 条`; an invalid `--type` under `--json` is still one JSON object and exits 1 -
+  because "what does it print by default" is the whole question, and a text assertion on the source could not
+  answer it. It passes whether or not a vault is on disk - both states were measured, an empty directory and one
+  that does not exist - which matters because the second is the only state CI is ever in.
+
 - **The five health-check cases for the scheduled-task row now run in CI.** They were `skipIf(os.name != 'nt')`,
   and since CI runs on Linux that meant this row - including the "not run yet" state fixed the same day - had **no
   coverage in CI at all**: a guard that only ever ran on the author's machine. The harness now pins the platform

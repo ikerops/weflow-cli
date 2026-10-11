@@ -4,7 +4,7 @@
 **非文本消息不能变成空行**（否则模型是在空白上给分）、**证据量要能看见**、
 以及**自相矛盾的判断要被抓出来**（"在等我"但最后一条是我发的）。
 """
-import importlib.util
+import contextlib, importlib.util, io, json, types
 from pathlib import Path
 import sys
 import unittest
@@ -223,6 +223,64 @@ class RenderedPageTests(unittest.TestCase):
         self.assertNotIn('http://', page)
         self.assertNotIn('https://', page)
         self.assertNotIn('<script', page)
+
+
+class JsonStdoutContractTests(unittest.TestCase):
+    """`--json` 时 stdout 必须是**一整份** JSON —— 进度一律走 stderr。
+
+    2026-10-11 由一条 stdout 纯净度探针发现：`awaiting --dry-run --json` 的进度行原来无条件打
+    stdout（`| jq` 会断在第一个字符上），而"最近 N 天没有活跃会话"那条早退干脆只打散文，机器
+    消费者**拿不到任何可解析的东西**（闲置机器上就会撞到）。两处都在 `main()` 里，所以这里驱动
+    真的 `main()`，只把边界打桩（配置、shard 连接、会话列表、消息），判据是 `json.loads` **整份**
+    解析 —— 混进去一个字符的进度就不成立。
+    """
+
+    def run_main(self, argv, sessions, messages=()):
+        """跑一次 `main()`，返回 (退出码, stdout, stderr)。"""
+        conn = types.SimpleNamespace(close=lambda: None)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(rd, 'load_config', return_value={'ntDbPath': 'x'}))
+            stack.enter_context(patch.object(rd, 'decrypt_lock', side_effect=lambda v: v))
+            stack.enter_context(patch.object(rd.nt_decrypt, 'connect_message_shards',
+                                             return_value=[conn]))
+            stack.enter_context(patch.object(rd.nt_decrypt, 'find_contact_db_path',
+                                             return_value=None))
+            stack.enter_context(patch.object(rd.nt_decrypt, 'get_sessions',
+                                             return_value={'sessions': sessions}))
+            stack.enter_context(patch.object(rd.nt_decrypt, 'get_messages',
+                                             return_value={'messages': list(messages)}))
+            stack.enter_context(patch.object(sys, 'argv', ['reply_debt.py'] + list(argv)))
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = rd.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def session(self, talker='wxid_a', name='张三'):
+        return {'username': talker, 'lastTimestamp': 4_000_000_000, 'displayName': name}
+
+    def test_the_empty_scan_answers_with_one_json_object(self):
+        code, out, _ = self.run_main(['--json', '--days', '3'], sessions=[])
+        self.assertEqual(code, 0)
+        body = json.loads(out)                 # 整份解析：散文混进来就红
+        self.assertEqual(body['conversations'], 0)
+        self.assertTrue(body['writesNothing'])
+
+    def test_progress_goes_to_stderr_not_stdout(self):
+        code, out, err = self.run_main(['--json', '--dry-run'],
+                                       sessions=[self.session()],
+                                       messages=[message('在吗')])
+        self.assertEqual(code, 0)
+        body = json.loads(out)                 # 进度行若打回 stdout，这一句就抛
+        self.assertEqual(body['conversations'], 1)
+        self.assertIn('扫描', err, '进度行应该在 stderr 上')
+
+    def test_the_human_preview_is_still_readable(self):
+        code, out, _ = self.run_main(['--dry-run'], sessions=[self.session()],
+                                     messages=[message('在吗')])
+        self.assertEqual(code, 0)
+        self.assertIn('预览', out)
+        with self.assertRaises(ValueError):
+            json.loads(out)                    # 人看的那支**不**该是 JSON
 
 
 if __name__ == '__main__':
