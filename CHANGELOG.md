@@ -19,6 +19,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **The five health-check cases for the scheduled-task row now run in CI.** They were `skipIf(os.name != 'nt')`,
+  and since CI runs on Linux that meant this row - including the "not run yet" state fixed the same day - had **no
+  coverage in CI at all**: a guard that only ever ran on the author's machine. The harness now pins the platform
+  (`patch.object(hc.os, 'name', ...)`) the way the TS side pins `process.platform`, so the cases exercise the code
+  rather than the host; a non-Windows case was added too, pinning the deliberate choice that the row reports OK and
+  says why there. Pinning `os.name` is safe here because `os.path` fixes its implementation at import and
+  `subprocess` is already stubbed on this path.
+
 - **`weflow-cli search --no-rerank` now exists.** `docs/OPERATIONS.md` had been telling users to run it while the
   CLI answered `unknown option` - the flag existed in `scripts/semantic_search.py` all along, the TS command simply
   never forwarded it, and `docs/DECISIONS.md` (D-032) described it as if it worked. That is the `1.5.0` shape

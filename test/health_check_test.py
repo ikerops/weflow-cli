@@ -12,7 +12,6 @@
 import datetime
 import importlib.util
 import json
-import os
 import sys
 import time
 import unittest
@@ -220,27 +219,36 @@ class ScheduledTasksCheckTests(unittest.TestCase):
         p.stdout, p.returncode = stdout, returncode
         return p
 
-    def run_check(self, stdout, returncode=0):
+    def run_check(self, stdout, returncode=0, platform='nt'):
+        """跑一次 `check_scheduled_tasks`：`schtasks`、子进程、**平台**都打桩。
+
+        `platform` 打在 `hc.os.name` 上 —— 这个函数第一句就是"不是 Windows 就早退"，所以原来
+        这几条只能在 Windows 上跑，CI（Linux）里**一律 skip**：等于没有任何东西在 CI 里盯着这个
+        函数（2026-10-11 刚改过它的判据，那次改动在 CI 上就是没测的）。在 Windows 上钉 `'nt'`
+        是空操作；在 Linux 上钉住之后这些用例才真的会跑。
+        `os.path` 在导入时就选定了实现，不受这次赋值影响；`subprocess` 在这条路径上已经打桩。
+        """
         report = hc.Report()
         with patch.object(hc.shutil, 'which', lambda name: 'schtasks'), \
-             patch.object(hc.subprocess, 'run', lambda *a, **k: self._proc(stdout, returncode)):
+             patch.object(hc.subprocess, 'run', lambda *a, **k: self._proc(stdout, returncode)), \
+             patch.object(hc.os, 'name', platform):
             hc.check_scheduled_tasks(report)
         self.assertEqual(len(report.rows), 1)
         return report.rows[0]
 
-    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
+    # 下面这些**不再**带 skipIf：平台由 `run_check(platform=...)` 钉住（见那个 docstring）。
+    # 原来它们在 CI（Linux）里一律 skip —— 这一项在 CI 上等于没人盯。
+
     def test_上次成功(self):
         row = self.run_check('TaskName:   WeFlow Issue Watch\nLast Result: 0\n')
         self.assertTrue(row['ok'])
         self.assertIn('均在位且上次成功', row['detail'])
 
-    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
     def test_上次失败(self):
         row = self.run_check('TaskName:   WeFlow Issue Watch\nLast Result: 1\n')
         self.assertFalse(row['ok'])
         self.assertIn('上次运行失败', row['detail'])
 
-    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
     def test_还没跑过是它自己的状态不是上次失败(self):
         """`SCHED_S_TASK_HAS_NOT_RUN`（267011 / 0x41303）＝ 注册之后还没到第一次触发。
 
@@ -254,7 +262,6 @@ class ScheduledTasksCheckTests(unittest.TestCase):
             self.assertIn('还没跑过', row['detail'], raw)
             self.assertNotIn('上次运行失败', row['detail'], raw)
 
-    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
     def test_读不出上次结果时不算通过(self):
         """**这条钉的是假绿**：输出里没有那一行（语言/格式变了）⇒ 说"读不出"，不说"成功"。"""
         row = self.run_check('TaskName:  WeFlow Issue Watch\nStatus:  Ready\n')
@@ -262,11 +269,18 @@ class ScheduledTasksCheckTests(unittest.TestCase):
         self.assertIn('读不出', row['detail'])
         self.assertNotIn('上次成功', row['detail'])
 
-    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
     def test_任务不存在(self):
         row = self.run_check('', returncode=1)
         self.assertFalse(row['ok'])
         self.assertIn('不存在', row['detail'])
+
+    def test_非_Windows_上报跳过并说清是平台(self):
+        """钉住**现状**（这是一条明说的选择，不是"通过"）：非 Windows 上这一项报 OK 并写明原因 ——
+        那里没有"计划任务"这回事。若将来改成"没验证就不算通过"，这条会红，那时是有意的。
+        """
+        row = self.run_check('', platform='posix')
+        self.assertTrue(row['ok'])
+        self.assertIn('非 Windows', row['detail'])
 
 
 if __name__ == '__main__':
