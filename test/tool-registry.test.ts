@@ -41,6 +41,24 @@ test('声明表与 executeTool 的 case 一一对应 —— 两个方向都要�
   assert.equal(new Set(declared).size, declared.length, '工具名不许重复')
 })
 
+test('PROJECT_STATE 里报的工具数 = 声明表的长度（加工具时那句话必须跟着动）', () => {
+  // 方向是"拿声明表去比文档"，不是反过来抄一遍 —— 这个文件的规矩（见文件头：字段和测试一起抄，
+  // 就会一起错、谁都不响）。
+  // 为什么值得钉：那一行写的是"31 local tools … **all 31 tool branches**"，**后一句是关于测试覆盖
+  // 的声明**，而"加了一个工具"正是该重审它的时候。数不跟着动，那句"全分支覆盖"就会静默变假 ——
+  // 那一行自己的历史注释里就记着：早先的版本**在测试存在之前**就宣称过这覆盖。
+  // ⚠️ 只钉**当前声称**（`local tools` / `tool branches`）。同一份文档里还有一句
+  // "31 tools were walked one by one against the case file" —— 那讲的是过去某次审计，硬让它跟着
+  // 今天的数走就是**篡改历史**，所以不钉它。
+  const state = read('docs', 'PROJECT_STATE.md')
+  const claims = [...state.matchAll(/(\d+)\s+(local tools|tool branches)/g)]
+  assert.ok(claims.length >= 2, `没找到那几句工具数声明（改写了？只找到 ${claims.length} 处）`)
+  for (const [, number, phrase] of claims) {
+    assert.equal(Number(number), declared.length,
+      `PROJECT_STATE 里写的是 "${number} ${phrase}"，而声明表里是 ${declared.length} 个`)
+  }
+})
+
 test('每条声明都是可用的：有描述、参数是 object、名字是小写下划线', () => {
   for (const tool of TOOL_DEFS) {
     const { name, description, parameters } = tool.function
