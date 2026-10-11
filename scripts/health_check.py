@@ -138,14 +138,26 @@ def check_environment(report):
 
 
 def pick_talkers(report):
-    """The most recently active sessions - the likeliest to span shards."""
+    """The most recently active sessions - the likeliest to span shards.
+
+    **挑不出来时要说出来**：没有会话是"没登录/没 init"（会报红），而**有会话、却一条都拿不到
+    `username`** —— 那是"字段长变了"或"列表是半截的"。这一支原来直接返回空，`main()` 里
+    `if talkers:` 于是**静默跳过**后两项检查，报告照样写"全部通过"（只是项数悄悄少了两个）。
+    同一个假绿在"计划任务"那一项也出现过（见那一段的注释）。
+    """
     _, data = run_json(['sessions', '--limit', str(SAMPLE_LIMIT)])
     sessions = ((data or {}).get('sessions') or [])
     if not sessions:
         report.add('选择样本会话', False, '会话列表为空', '先确认微信已登录且 init 成功')
         return []
     ordered = sorted(sessions, key=lambda s: s.get('sortTimestamp') or 0, reverse=True)
-    return [s['username'] for s in ordered[:2] if s.get('username')]
+    picked = [s['username'] for s in ordered[:2] if s.get('username')]
+    if not picked:
+        # 有会话却挑不出样本 ⇒ 后面两项（读取路径一致 / 导出格式）会整段不跑，
+        # 不说的话这一份报告就是"少了两个检查的全绿"
+        report.add('选择样本会话', False, f'会话有 {len(sessions)} 条，但都没有 username 字段',
+                   'sessions 的输出字段可能变了 —— 这两项检查因此没跑，不代表通过')
+    return picked
 
 
 def read_newest_json(out_dir):

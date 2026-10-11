@@ -32,6 +32,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   but a week without chatting produces exactly the same reading. The hint now gives both explanations, names the
   one that is more likely, and points at the row that discriminates between them (if the two read paths agree,
   nothing is broken).
+- **A health check that cannot pick its sample conversation now says so instead of quietly skipping two rows.**
+  `读取路径一致` and the export-format checks run on a sample conversation; when the session list was non-empty but
+  none of its entries carried a `username` (a changed field, a truncated list), that selection returned nothing and
+  the two checks were skipped - while the report still said "all passed", just with a smaller count. It now fails
+  with a line explaining that those two checks did not run, which is not the same as passing.
 - **`health_check` no longer reports the scheduled tasks as "all present and last run succeeded" when it could
   not actually read the result.** That row parses the text `schtasks` prints and looks for the `Last Result` line;
   if a system language or an output-format change takes that line away, both its "failed" and its "missing" lists

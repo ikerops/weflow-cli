@@ -86,6 +86,39 @@ class WechatClientCheckTests(unittest.TestCase):
         self.assertIn('update.data', row['detail'])
 
 
+class PickTalkersTests(unittest.TestCase):
+    """挑样本会话挑不出来时**必须报**：否则后面两项检查静默不跑，而报告写"全部通过"。"""
+
+    def run_pick(self, sessions):
+        report = hc.Report()
+        with patch.object(hc, 'run_json', lambda args: (0, {'sessions': sessions})):
+            picked = hc.pick_talkers(report)
+        return picked, report.rows
+
+    def test_正常挑最近两条(self):
+        picked, rows = self.run_pick([
+            {'username': 'a', 'sortTimestamp': 100},
+            {'username': 'b', 'sortTimestamp': 300},
+            {'username': 'c', 'sortTimestamp': 200},
+        ])
+        self.assertEqual(picked, ['b', 'c'], '按最新排序取两条')
+        self.assertEqual(rows, [], '挑得出来就不添一行')
+
+    def test_有会话但没有_username_时不许静默跳过(self):
+        picked, rows = self.run_pick([{'sortTimestamp': 100}, {'sortTimestamp': 200}])
+        self.assertEqual(picked, [])
+        self.assertEqual(len(rows), 1, '要留下一行说明"没跑"，否则报告是少了两项的全绿')
+        self.assertFalse(rows[0]['ok'])
+        self.assertIn('username', rows[0]['detail'])
+        self.assertIn('没跑', rows[0]['hint'])
+
+    def test_会话列表为空时说清是没登录(self):
+        picked, rows = self.run_pick([])
+        self.assertEqual(picked, [])
+        self.assertFalse(rows[0]['ok'])
+        self.assertIn('会话列表为空', rows[0]['detail'])
+
+
 class SessionFreshnessTests(unittest.TestCase):
     """"会话很旧"有两种解释，提示里必须**两种都写**，并点出判别器在隔壁那一项。"""
 
