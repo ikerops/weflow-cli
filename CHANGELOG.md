@@ -19,6 +19,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **"Every command a script or an AI might drive has a `--json` mode" is now checked rather than asserted.**
+  `docs/EXTENDING.md` has stated that convention for a while and nothing enforced it - which is how `vault search`
+  ended up as the one command whose only output was JSON while the flag itself did not exist (the entry below).
+  `test/json-surface.test.ts` walks the CLI's own source, treats every command with an `.action` as a leaf, and
+  fails naming the command and its line if a leaf declares no `--json`. Measured on 2026-10-11: **113 leaves, 111
+  declaring `--json`, 2 exceptions** - `whitelist` and `blacklist`, whose bare form is a convenience table while
+  the machine path is their `list` subcommand - and those two live in an allowlist **with their reason**, checked
+  for staleness so a fixed exception cannot sit there unnoticed. The test reads names, not help text: parsing
+  `--help`'s `Commands:` section folds long descriptions onto continuation lines, and the first attempt counted 62
+  "commands", prose included. It also ignores matches inside `//` comments from the start, because a commented-out
+  `.option('--json', …)` is a flag nobody can type - a lesson the `vault search` guard taught an hour earlier, when
+  its own mutation was written as a comment and the check passed.
+
 - **`awaiting --json` puts its progress on stderr, so stdout is exactly one JSON object.** The scan printed two
   progress lines unconditionally - `扫描 N 个…` and `判断完成 n/m，耗时…` - so `awaiting --dry-run --json | jq` died on
   the first character, and the early exit ("最近 N 天没有活跃会话") answered with a bare sentence instead of JSON,
