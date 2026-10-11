@@ -193,8 +193,11 @@ def check_read_paths(report, talker):
     """
     with tempfile.TemporaryDirectory(prefix='wf-health-') as tmp:
         out_json = Path(tmp) / 'json'
-        code_j, err_j = run(['export', talker, 'json', '--limit', '5',
-                             '--output', str(out_json), '--non-interactive'])[0::2]
+        # 这次导出的退出码与 stderr **不看**：这一项判的是"两条路径读到的内容一致不一致"，
+        # 而 json 读不出来时 `read_newest_json` 会给 None、下面照样报红。留两个不用的变量
+        # 只会让"检查了什么"看起来比实际多。
+        run(['export', talker, 'json', '--limit', '5',
+             '--output', str(out_json), '--non-interactive'])
         newest_json = read_newest_json(out_json)
 
         out_html = Path(tmp) / 'html'
