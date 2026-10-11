@@ -34,6 +34,10 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   directory is a symlink), the client's **crash records** (count and newest timestamp only - never their
   contents), and a caveat when `update\update.data` exists, because then the version from the command line may
   not be the one actually loaded (that file's format is not understood, so it is stated rather than guessed).
+  That self-reported directory is also **used**, not just shown: `init` now asks the running client first when
+  discovering the data root, and reports which source won, because the other two routes (well-known locations,
+  scanning the disk for the folder name) both guess from the name. A hint still has to pass the same structural
+  check (an account folder must exist under it) - being handed a path is not the same as the path working.
 - **The 2D knowledge graph shows names again when you click a concept.** Focusing a node dims everything else and is
   supposed to make "who is it connected to" visible - but the label pass only ever considered nodes *outside* the
   highest-degree batch, so clicking a hub (in a small graph: clicking anything) drew **no names at all** while the

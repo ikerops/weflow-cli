@@ -274,6 +274,25 @@ export function summarize(processes: WechatClientProcess[],
 /** 默认的执行器：`Get-CimInstance`。测试里换掉它，别真去问系统。 */
 export type PowershellRunner = (command: string) => Promise<string>
 
+/**
+ * **只要那一句话**：客户端自报的数据目录。
+ *
+ * 给 `init` 的数据目录发现用（`DbPathService.autoDetect({ hintedRoots })`）—— 它是唯一
+ * **来自客户端自己**的来源，别的都是按目录名猜的。找不到就返回空数组（调用方走老路），
+ * **不抛**：这只是个线索，不该让初始化失败。
+ */
+export async function reportedDataDirs(run: PowershellRunner = defaultRunner): Promise<string[]> {
+  if (process.platform !== 'win32') return []
+  let raw = ''
+  try {
+    raw = await run(PS_LIST)
+  } catch {
+    return []
+  }
+  const dirs = parseProcessRows(raw).map(p => p.dataDir).filter((d): d is string => !!d)
+  return [...new Set(dirs.map(d => d.replace(/[\\/]+$/, '')).filter(Boolean))]
+}
+
 const defaultRunner: PowershellRunner = async (command) => {
   const { stdout } = await execFileAsync('powershell.exe',
     ['-NoProfile', '-NonInteractive', '-Command', command], { timeout: 15_000 })

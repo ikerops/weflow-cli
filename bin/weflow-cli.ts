@@ -27,7 +27,7 @@ import { applyDerivedNtKeys, enableFavorites, detectFavDbPath } from '../src/ser
 import type { ChatSession } from '../src/types.js'
 import { disabledIds, describeSkill, readSkillBody, scanSkills, skillRoots, skillState } from '../src/services/assistantSkills.js'
 import { assistantScenes, validateSceneId, type Scene } from '../src/services/assistantScenes.js'
-import { detectWechatClient, samePath } from '../src/services/wechatClient.js'
+import { detectWechatClient, reportedDataDirs, samePath } from '../src/services/wechatClient.js'
 
 const program = new Command()
 
@@ -787,8 +787,13 @@ program
         console.log(chalk.gray('  目录名未命中时将继续进行深度结构扫描，过程可能需要较长时间...'))
       }
       const detected = configuredDataRoot
-        ? { success: true, path: configuredDataRoot }
-        : await dbPathService.autoDetect({ searchDrives: opts.searchDrives, fullScan: opts.fullScan })
+        ? { success: true, path: configuredDataRoot, source: 'known' as const }
+        : await dbPathService.autoDetect({
+            searchDrives: opts.searchDrives, fullScan: opts.fullScan,
+            // **先问客户端自己**（它命令行上带着 `--wechat-files-path`）：这是唯一"来自
+            // 客户端自己"的来源，其余都是按目录名猜。取不到就是空数组，走老路。
+            hintedRoots: await reportedDataDirs(),
+          })
       if (!detected.success || !detected.path) {
         console.log(chalk.red('✗ 未检测到微信数据目录'))
         if (!opts.searchDrives && !opts.fullScan) {
@@ -806,7 +811,10 @@ program
         }
         process.exit(1)
       }
-      console.log(chalk.green(`✓ 检测到数据目录: ${detected.path}`))
+      // **说清是怎么找到的**：来源不同，可信度与后续排查都不同（"客户端自己说的"最硬）
+      const howFound = detected.source === 'client' ? '（客户端自己报的）'
+        : detected.source === 'scan' ? '（全盘扫描找到的）' : ''
+      console.log(chalk.green(`✓ 检测到数据目录: ${detected.path}${howFound}`))
       configService.set('dbPath', detected.path)
       configService.set('dataVersion', '4.x')
 

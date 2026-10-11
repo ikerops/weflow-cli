@@ -39,13 +39,17 @@ weflow-cli init
 weflow-cli init --refresh
 ```
 
-数据目录不在常见位置时按成本递增尝试：
+数据目录不在常见位置时，`init` 按**可信度**递减来找 —— **先问在跑的客户端**（它的命令行上带着
+`--wechat-files-path`，是唯一"来自客户端自己"的来源，其余都是按目录名猜），找到了会写明是哪种来源；
+找不到再按成本递增试：
 
 ```powershell
-weflow-cli init --path "D:\WeChatData"
-weflow-cli init --search-drives
-weflow-cli init --full-scan
+weflow-cli init --path "D:\WeChatData"     # 你直接告诉它
+weflow-cli init --search-drives            # 跨盘按目录名找
+weflow-cli init --full-scan                # 名字也没命中时按结构扫
 ```
+
+（客户端没在跑就没有那条线索，`init` 照旧从常见位置开始 —— 不会因此失败。）
 
 `--path` 可以指向微信数据根目录、账号目录或其 `db_storage` 目录。全盘结构搜索可能耗时较长，且会枚举更多本地目录，只有前两种方式找不到时再使用。
 

@@ -1438,6 +1438,11 @@ which is what the gate is for.
   只比结论、**不把路径放进机器可读输出**（`weflow-check/v1` 一直不含路径），且**按 realpath 比**——
   本机 `C:\Users\Administrator\xwechat_files` 实测是 `D:\微信\xwechat_files` 的软链（同一份库两条路径），
   不比真身会永远报"不是同一份"。
+- 而且**这条线索现在被用起来了**：`init` 的目录发现（`DbPathService.autoDetect`）会把它作为
+  `hintedRoots` **最先**试，并回报 `source` 让用户知道"这是客户端自己说的 / 还是扫出来的"。
+  理由：发现数据目录的另外两条路（常见位置、全盘扫目录名）**都是按名字猜**，而这一条来自客户端本身；
+  线索**照样要过 `resolveDataRoot` 的结构验证**（找到账户目录才算数）——拿到一个路径 ≠ 它能用。
+  【实测】本机：自报 `D:\微信\xwechat_files` → `{success: true, source: "client"}`，没走扫描。
 - **客户端崩溃记录**（`%APPDATA%\Tencent\xwechat\crashinfo\`）：**只报条数与最近时间，不读内容**【实测】。
   "数据读不出来 / 客户端起不来"时这是一条独立线索。
 - **`update.data` 在场时给一句 caveat**【推断】：报告把它留成未解（"若该文件存在，exe 侧第一次

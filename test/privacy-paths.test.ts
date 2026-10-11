@@ -46,6 +46,29 @@ test('normalizes WeChat data, account, and database subdirectory paths', () => {
   assert.equal(service.scanWxidCandidates(join(root, 'not_an_account')).length, 0)
 })
 
+test('autoDetect 先用"客户端自报的线索"，而且线索照样要过结构验证', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'weflow-hint-'))
+  const service = new DbPathService()
+  // 造一个"只有线索这条路能找到"的位置：名字不叫 xwechat_files，也不在家目录常见位置
+  const odd = join(tmp, 'Tencent', 'WeChatData')
+  mkdirSync(join(odd, 'wxid_hinted', 'db_storage', 'message'), { recursive: true })
+
+  // ① 线索有效 → 用它，并且**说清是客户端给的**
+  const byHint = await service.autoDetect({ hintedRoots: [odd] })
+  assert.equal(byHint.success, true)
+  assert.equal(byHint.path, odd, '线索指的目录本身能被 resolveDataRoot 认成数据根')
+  assert.equal(byHint.source, 'client')
+
+  // ② 线索是坏的（不存在 / 底下没有任何账户目录）→ **退回老路**，不许拿它当结果。
+  // 注：hint 指到数据根的**父目录**是**有效**的（`resolveDataRoot` 会往下找账户目录），
+  // 所以这里用一个空目录当"真正无效的线索"。
+  const empty = join(tmp, 'empty')
+  mkdirSync(empty, { recursive: true })
+  const bad = await service.autoDetect({ hintedRoots: [join(tmp, 'nope'), empty] })
+  assert.notEqual(bad.source, 'client', `坏线索不许赢：${JSON.stringify(bad)}`)
+  rmSync(tmp, { recursive: true, force: true })
+})
+
 test('discovers NT databases from a custom xwechat_files root', () => {
   const root = mkdtempSync(join(tmpdir(), 'weflow-custom-nt-'))
   const xwechatRoot = join(root, 'xwechat_files')

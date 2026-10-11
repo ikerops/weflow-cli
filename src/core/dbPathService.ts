@@ -183,7 +183,18 @@ export class DbPathService {
   /**
    * 自动检测微信数据库根目录
    */
-  async autoDetect(options: { searchDrives?: boolean; fullScan?: boolean } = {}): Promise<{ success: boolean; path?: string; error?: string }> {
+  /**
+   * 找一个可用的数据根。
+   *
+   * `hintedRoots` 是**调用方拿到的线索**，会被**最先**试（见 bin 里的 init：它把客户端
+   * 命令行自报的 `--wechat-files-path` 放进来）。为什么值得优先：下面那两条都是**按目录名猜**
+   * （常见路径 / 全盘扫 `xwechat_files`），而这一条是**客户端自己说的** —— 也是唯一一条
+   * 不受"目录被建在别处、名字还不一样"影响的来源。
+   *
+   * 线索**同样要过 `resolveDataRoot` 验证**（找到账户目录才算数）：拿到一个路径 ≠ 它能用。
+   */
+  async autoDetect(options: { searchDrives?: boolean; fullScan?: boolean; hintedRoots?: string[] } = {}):
+    Promise<{ success: boolean; path?: string; error?: string; source?: 'client' | 'known' | 'scan' }> {
     try {
       const possiblePaths: string[] = []
       const home = homedir()
@@ -227,10 +238,17 @@ export class DbPathService {
         }
       }
 
+      // 1) **客户端自己说的**（命令行里的 `--wechat-files-path`）。取不到就走下面的老路。
+      for (const hint of options.hintedRoots ?? []) {
+        const dataRoot = this.resolveDataRoot(hint)
+        if (dataRoot) return { success: true, path: dataRoot, source: 'client' }
+      }
+
+      // 2) 常见路径（含按目录名在几个已知位置里找）
       for (const path of possiblePaths) {
         const dataRoot = this.resolveDataRoot(path)
         if (dataRoot) {
-          return { success: true, path: dataRoot }
+          return { success: true, path: dataRoot, source: 'known' }
         }
       }
 
@@ -238,7 +256,7 @@ export class DbPathService {
         for (const volumeRoot of this.getVolumeRoots()) {
           for (const dataRootPath of this.findKnownDataRoots(volumeRoot, 12)) {
             const dataRoot = this.resolveDataRoot(dataRootPath)
-            if (dataRoot) return { success: true, path: dataRoot }
+            if (dataRoot) return { success: true, path: dataRoot, source: 'scan' }
           }
         }
       }
@@ -246,7 +264,7 @@ export class DbPathService {
       if (options.fullScan) {
         for (const volumeRoot of this.getVolumeRoots()) {
           const accountPath = this.findAccountDescendant(volumeRoot, 32)
-          if (accountPath) return { success: true, path: dirname(accountPath) }
+          if (accountPath) return { success: true, path: dirname(accountPath), source: 'scan' }
         }
       }
 
