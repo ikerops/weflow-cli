@@ -53,9 +53,11 @@ jobs:
           }
           # 跳过 ≠ 通过：`ℹ skipped N` 只出现在日志里，而日志本机读不到 ⇒ 把"有东西没跑"发出来。
           # 用 warning（不失败）——依赖装不上时静默跳过是**有意**的选择，但覆盖率的缺口不能被藏起来。
+          # 末尾的 `|| true` 不是装饰：这是脚本最后一条命令，而 `grep` 无命中退出 1，配合上面的
+          # `set -o pipefail` 会让"一个跳过都没有"这个**最常见**的情况把整步弄红。
           grep -E '^ℹ skipped [1-9]|^# skip ' /tmp/weflow-test.log | head -20 | while IFS= read -r line; do
             echo "::warning::有测试没跑：$line"
-          done
+          done || true
 
   python:
     runs-on: ubuntu-latest
@@ -86,7 +88,7 @@ jobs:
           }
           grep -E "skipped '" /tmp/weflow-pytest.log | head -20 | while IFS= read -r line; do
             echo "::warning::有测试没跑（跳过）：$line"
-          done
+          done || true
 
   # 发布前的一致性校验: 版本号、锁文件、npm 包内容
   release-consistency:
