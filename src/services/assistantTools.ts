@@ -349,9 +349,10 @@ function fmtTime(ts: number): string {
  */
 function transcriptTime(ts: number): string {
   const n = Number(ts)
-  const d = n > 1e12 ? new Date(n) : new Date(n * 1000)
+  const shifted = new Date((n > 1e12 ? n : n * 1000) + 8 * 3600_000)
   const pad = (value: number) => String(value).padStart(2, '0')
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} `
+    + `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`
 }
 
 /** 单条消息进转录的截断长度。**必须等于** `scripts/reply_debt.py` 的 `DRAFT_MSG_CHARS`。 */
