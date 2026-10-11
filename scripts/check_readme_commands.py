@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""README 里写的命令，必须在 CLI 里真实存在（`docs/RELEASING.md` 第 3 步的一部分）。
+"""**手写的命令面**必须在 CLI 里真实存在：README 的代码块 + `capabilities --json` 里的 `cli:` 串。
+
+`capabilities --json` 也在这一支里，因为它是**学这个项目的入口**（比 600 KB 的文档好读），而它的
+`cli:` 字段是**手写**的 —— 同一个输出里的 MCP 那半从真实注册表派生（`safety.mcpSurface.derivedFrom`），
+手写的那半同样会漂移。2026-10-11 量过：21 条 `cli:` 串、0 处对不上（准的），但准不等于有人盯着。
+
 
 为什么要有它：`1.5.0` 与主线之间曾拉开 128 个提交、两个多月，用户照着 README 敲
 `init --path` 得到 `unknown option` —— **文档漂移是用户先发现的那一类故障**，而仓库里
@@ -110,6 +115,38 @@ def cli_help(path, cli=None):
     return (proc.stdout + proc.stderr).decode('utf-8', 'replace')
 
 
+def capability_commands(cli=None):
+    """`capabilities --json` 里那几个**手写**的 `cli:` 命令串 → [(字段路径, 命令行)]。
+
+    只收 `cli` 字段：这个对象的其余部分要么是布尔/契约名，要么（`safety.mcpSurface`）是从真实
+    注册表派生的 —— 派生那半不用这儿管。
+    """
+    cli = cli or os.path.join(ROOT, 'cli.cjs')
+    if not os.path.exists(cli):
+        raise SystemExit('找不到 %s —— 先跑 `npm run build`' % cli)
+    proc = subprocess.run(['node', cli, 'capabilities', '--json'], capture_output=True, cwd=ROOT)
+    text = (proc.stdout or b'').decode('utf-8', 'replace')
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise SystemExit('`capabilities --json` 没给出可解析的 JSON：%s' % text[:200])
+    out = []
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == 'cli' and isinstance(value, str):
+                    out.append((where + '.' + key, value))
+                else:
+                    walk(value, where + '.' + key)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                walk(item, '%s[%d]' % (where, i))
+
+    walk(data, 'capabilities')
+    return out
+
+
 CANNED = {
     (): ('Usage: weflow-cli [options] [command]\n\nOptions:\n  -V, --version\n\n'
          'Commands:\n  sessions [options]  会话列表\n  wiki [options]      概念图谱管理\n'),
@@ -170,19 +207,35 @@ def main():
             findings += [{'file': name, 'line': lineno, 'command': body,
                           'kind': kind, 'detail': detail} for kind, detail in problems]
 
+    # 第二个手写面：`capabilities --json` 的 `cli:` 串（学这个项目的入口，也是手写的）。
+    caps = capability_commands()
+    for where, command in caps:
+        checked += 1
+        _, problems = audit_line('weflow-cli ' + command, cli_help)
+        findings += [{'file': 'capabilities --json', 'line': 0, 'command': command, 'where': where,
+                      'kind': kind, 'detail': detail} for kind, detail in problems]
+    readme_checked = checked - len(caps)
+
     if args.json:
-        print(json.dumps({'checked': checked, 'findings': findings}, ensure_ascii=False, indent=2))
+        print(json.dumps({'checked': checked, 'readmeChecked': readme_checked,
+                          'capabilitiesChecked': len(caps), 'findings': findings},
+                         ensure_ascii=False, indent=2))
     else:
         for f in findings:
-            print('[FAIL] %s:%d  %s\n       %s —— README 里有，CLI 里没有'
-                  % (f['file'], f['line'], f['command'], f['detail']))
+            source = ('%s（%s）' % (f['file'], f['where'])) if f.get('where') else ('%s:%d' % (f['file'], f['line']))
+            print('[FAIL] %s  %s\n       %s —— 写的地方有它，CLI 里没有' % (source, f['command'], f['detail']))
         if findings:
-            print('\n%d 条命令里有 %d 处对不上（共检查 %d 条）。'
-                  % (len(set(f['command'] for f in findings)), len(findings), checked))
+            print('\n%d 处对不上（共检查 %d 条：README %d + capabilities %d）。'
+                  % (len(findings), checked, readme_checked, len(caps)))
         else:
-            print('README 命令面与 CLI 一致：检查了 %d 条命令，0 处对不上。' % checked)
-    if checked == 0:
-        print('反空扫失败：一条命令都没扫到，这次"通过"不作数。')
+            print('命令面与 CLI 一致：README %d 条 + capabilities 的 %d 条 `cli:` 串，0 处对不上。'
+                  % (readme_checked, len(caps)))
+    # 两个面各自的反空扫：少扫一面，"通过"就少一半，那时不该报通过
+    if readme_checked == 0:
+        print('反空扫失败：README 里一条命令都没扫到，这次"通过"不作数。')
+        return 2
+    if not caps:
+        print('反空扫失败：`capabilities --json` 里一条 `cli:` 串都没读到，这一半没有被检查。')
         return 2
     return 1 if findings else 0
 

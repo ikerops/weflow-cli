@@ -82,7 +82,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   command's help. On this repository it checks 82 commands and finds 0 mismatches - which is the interesting part,
   given the two knowledge bases, the panel and the rest of 1.10.0 landed in between. `--self-test` carries the
   positive controls this repository requires of a scanner (a check must be shown able to go red), and both run in the
-  CI `node` job after the build.
+  CI `node` job after the build. **The same check now also covers `capabilities --json`**: its `cli:` fields are
+  hand-written (the MCP half of that output is derived from the real registry), the output is the documented entry
+  point for learning this project, and it currently checks out - 21 strings, 0 mismatches, which is exactly the
+  point: accurate today is not the same as watched. Each surface has its own anti-empty-scan, so losing one does
+  not report a pass.
 
 - **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist
   of directories and globs, and both files sat just outside the patterns: `scripts/data/wechat_emoji.json` (read by
