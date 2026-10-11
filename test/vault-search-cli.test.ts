@@ -12,7 +12,12 @@
  * 判据选**行为**而不是源码文本：`--json` 有没有真的转过去、默认到底吐什么，只有端到端跑一次才有定论。
  * 静态写法在这个仓库里有先例（`test/chat-notes-cli.test.ts` 的 `opts.transcribeVoice ? [...]`），
  * 但一条端到端断言已经蕴含它 —— 把 `...(opts.json ? ['--json'] : [])` 改回硬编码 `'--json'`，
- * 下面第二条会红；声明了却不转发，第一条会红。两条一起覆盖，就不必再对同一件事写一遍形状断言。
+ * 下面第二条会红；声明了却不转发，第一条会红。
+ *
+ * 静态那半边仍然要有一条，而且方向是**反过来**的：见最后那条"声明 ↔ 转发"一致性检查。行为判据
+ * 证明不了"某个旗标忘了声明" —— 参数表里多一个 `'--days'` 而 `.option('--days')` 不在，命令照样能跑，
+ * 只有用户敲它才会拿到 `unknown option`。这正是这次这个 bug 的形态（`'--json'` 转发了、没声明），
+ * 而下一条 `--days` 是同一处的第二个缺口（脚本一直有它，CLI 没接）。
  *
  * **不需要本机数据**：`DEFAULT_VAULT` 是按脚本位置算的绝对路径，CI 里 `output/` 不存在 ⇒
  * 0 条命中、退出 0，人类模式照样打印"找到 0 条"。已实测过空目录与不存在的目录两种情形
@@ -20,6 +25,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
 
@@ -66,4 +72,79 @@ test('vault search 的校验分支认 --json：JSON 模式下 stdout 仍是一�
   assert.equal(body.success, false)
   assert.equal(body.code, 'INVALID_ARGUMENT')
   assert.equal(body.field, 'type', '要指出是哪个字段不合法')
+})
+
+test('vault search 真的读了 --days（不是个声明了没人用的开关）', () => {
+  const r = runVaultSearch(['x', '--json', '--days', '0'])
+  assert.equal(r.status, 1, '--days 超出范围应当退出 1')
+  const body = JSON.parse(r.stdout)
+  assert.equal(body.code, 'INVALID_ARGUMENT')
+  assert.equal(body.field, 'days', '要指出是 days 不合法，而不是别的字段')
+})
+
+/** `vault search` 那段源码：按注释锚，到 `vault rag` 之前。
+ *
+ * 同名子命令在别处也有（顶层 `search`、`weread search`…），所以锚在**注释**上，并让调用方
+ * 验证锚对了（`test/search-cli.test.ts` 第一版锚错命令块的教训）。
+ */
+function vaultSearchBlock(src: string): string {
+  const start = src.indexOf('// vault search')
+  if (start < 0) return ''
+  const end = src.indexOf('// vault rag', start)
+  return src.slice(start, end > start ? end : src.length)
+}
+
+/** 旗标 → commander 放进 `opts` 的名字（`--top-k` → `topK`）。与 `test/search-cli.test.ts` 同一对。 */
+function optName(flag: string): string {
+  const bare = flag.replace(/^--/, '').replace(/^no-/, '')
+  return bare.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())
+}
+
+/** 在源码里找匹配，但**排除行内注释里提到的**。
+ *
+ * 为什么非排不可：这条守卫的第一次变异检查里，我把"这里原本是 `.option('--json', …)`"写进了注释，
+ * 判据于是在注释里读到了一个"声明"，报**通过** —— 变异没被抓到。而被注释掉的声明同样意味着
+ * "用户敲它只会拿到 unknown option"，所以这不是变异做得不对，是判据分不清声明和提及。
+ * 判法只按行内 `//` 之前有没有内容，不做字符串扫描：这一块里没有含 `//` 的字符串字面量。
+ */
+function matchesOutsideComments(text: string, re: RegExp): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(re)) {
+    const at = m.index!
+    const lineStart = text.lastIndexOf('\n', at) + 1
+    if (text.slice(lineStart, at).includes('//')) continue
+    out.push(m[1])
+  }
+  return out
+}
+
+test('vault search：声明 ↔ 转发，两个方向都要对得上', () => {
+  const SRC = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const block = vaultSearchBlock(SRC)
+  assert.ok(block.length > 0, '定位不到 vault search 的命令块（注释被改了？）')
+  assert.match(block, /vault_search\.py/, '定位到的不是 vault search（锚点失效了）')
+  assert.ok(!block.includes('vault_rag.py'), '块越界了：把 vault rag 也框了进来')
+
+  const declared = matchesOutsideComments(block, /\.option\('([^']+)'/g)
+    .map(m => m.split(',').pop()!.trim().split(/\s+/)[0])
+  assert.ok(declared.length >= 3, `只解析出 ${declared.length} 个声明，判据像是失效了`)
+
+  const call = block.slice(block.indexOf('runPythonCmd('))
+  assert.ok(call.length > 0, '定位不到 runPythonCmd 调用（结构变了？）')
+  const args = call.slice(call.indexOf('['), call.indexOf(']'))
+
+  // 方向一：声明了 ⇒ 必须转发（否则是个死开关）、必须被读过
+  for (const flag of declared) {
+    assert.ok(args.includes(`'${flag}'`),
+      `${flag} 声明了但没出现在传给脚本的参数表里 —— 用户敲了不会有任何变化`)
+    assert.ok(block.includes(`opts.${optName(flag)}`),
+      `${flag} 声明了却没人读 opts.${optName(flag)}`)
+  }
+  // 方向二：转发给脚本的 ⇒ 必须声明过。缺了这一半，就抓不到"硬编码转发、旗标不存在"
+  // （这次这个 bug 的原形），而那个形态**不会**让上面任何一条断言变红。
+  const forwarded = matchesOutsideComments(args, /'(--[a-z-]+)'/g)
+  const undeclared = forwarded.filter(f => !declared.includes(f))
+  assert.deepEqual(undeclared, [],
+    `这些旗标转发给了脚本却从没声明过 —— 用户敲它只会拿到 unknown option：${undeclared.join('、')}`)
+  assert.ok(forwarded.length >= 3, `参数表只解析出 ${forwarded.length} 个旗标，判据像是失效了`)
 })

@@ -4280,6 +4280,10 @@ program
         .option('--type <type>', 'all / article / concept / note', 'all')
         .option('--line <line>', 'wiki=文章线(默认) / chat=聊天线 / all=两条都搜', 'wiki')
         .option('--top-k <n>', '返回数量', '10')
+        // `vault_search.py` 一直有 `--days`（它的 docstring 自己就举 `--days 30`），CLI 从来没接 ——
+        // 于是"只搜最近一周"这件事在这条路上做不到，窗口被脚本默认值（90）钉死。与 `search-index --days`
+        // 同形：窗口的运行值由 CLI 说了算，默认值与脚本一致。
+        .option('--days <n>', '日报文章取最近多少天（默认 90）', '90')
         // 这条 `--json` 曾经**不存在，而 JSON 又是唯一的输出**：参数里硬编码着 `'--json'`，
         // 人类模式虽然脚本里写着（`vault_search.py` 不带 `--json` 时打印带相关度的可读列表）
         // 却没有任何入口能到达，用户显式敲 `--json` 还会拿到 `unknown option` —— 与
@@ -4310,8 +4314,10 @@ program
             process.exit(1)
           }
           const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
+          const days = parseCliInteger(opts.days, 'days', 1, 3650, opts.json)
           await runPythonCmd(script, [query, '--type', opts.type, '--line', opts.line,
-                                      '--top-k', String(topK), ...(opts.json ? ['--json'] : [])])
+                                      '--top-k', String(topK), '--days', String(days),
+                                      ...(opts.json ? ['--json'] : [])])
         })
     )
 

@@ -45,7 +45,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   not JSON and still says `找到 N 条`; an invalid `--type` under `--json` is still one JSON object and exits 1 -
   because "what does it print by default" is the whole question, and a text assertion on the source could not
   answer it. It passes whether or not a vault is on disk - both states were measured, an empty directory and one
-  that does not exist - which matters because the second is the only state CI is ever in.
+  that does not exist - which matters because the second is the only state CI is ever in. The same file carries the
+  static half in the direction that was missing: **every flag forwarded to the script must be declared, and every
+  declaration must be forwarded and read**. That second direction is what the paragraph above describes - a
+  hard-coded `'--json'` with no `.option` - and a behaviour test cannot see it, because the command still runs fine;
+  only typing the flag by hand fails. Its own first mutation proved the point twice over: the mutation was a
+  commented-out `.option('--json', …)`, and the check passed because the *comment* still matched. Commented-out
+  declarations are a real way to disable a flag, so matches inside `//` are now ignored, and the re-run failed on
+  the intended assertion.
+
+- **`vault search --days` exists too.** `vault_search.py` has taken a window all along - its own docstring
+  demonstrates `--days 30` - but the CLI never forwarded it, so the article corpus was pinned to the script's
+  90-day default and "only look at this week" was unreachable from this path. Exposed with the shape
+  `search-index --days` already uses: the CLI's value is what runs, and the default matches the script. This was
+  the last non-path flag of that command not on the CLI; `--vault` / `--biz-daily` stay off it on purpose (paths
+  are not copied into command arguments), and `vault rag` was already complete against its script.
 
 - **The five health-check cases for the scheduled-task row now run in CI.** They were `skipIf(os.name != 'nt')`,
   and since CI runs on Linux that meant this row - including the "not run yet" state fixed the same day - had **no
