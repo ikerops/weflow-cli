@@ -17,7 +17,32 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.10.0
+
+- **CI had been failing on every run - at least the last 60 - so nothing it guards was actually being enforced.**
+  Three causes, none of them in the feature under test. (1) `wechatClient` split Windows paths with the *platform*
+  `path`, so on a Linux runner `basename('D:\WeiXin\4.1.15.13\Weixin.exe')` was the whole string: the version row
+  said "unknown" and the install root came out as `.`. It now uses `win32` - identical on Windows, correct
+  everywhere. (2) The python job installed `zstandard pycryptodome`, plus a comment claiming the rest of
+  `requirements.txt` was not needed by those test files. That comment had gone stale: two tests import
+  `sqlcipher3` and one imports `numpy`, both declared dependencies, so the job failed on imports rather than
+  assertions. (3) Six tests read the **developer's machine** instead of a fixture: `search_knowledge` / `get_stats`
+  / `get_concepts` / `lint_wiki` take the knowledge-base root from `WEFLOW_ASSISTANT_VAULT_DIR`, which those files
+  never set (their siblings `biz-daily` / `reviews` / `skills` did), so on a clean checkout they took the "nothing
+  compiled yet" branch - one of them still described itself as "the part that does not depend on the environment".
+  The transcript contract test compared a local-timezone rendering against Python's fixed +8 (8 hours apart on a
+  UTC runner), and the MCP `draft_reply` test expected a preview where a clean checkout defaults to strict privacy.
+  All six now pin what they mean. Green as of 2026-10-11.
+- **That work exposed two real bugs, both "green while doing nothing".** `lint_wiki` answered "两个知识库都没有
+  断链/孤儿/空页/同名" even when it had skipped both lines because the directories did not exist - a clean bill of
+  health for something it never checked, which any user who has not compiled the wiki also meets. And the TS
+  transcript line used the machine's timezone where Python uses a fixed +8, so the two entry points disagreed by
+  hours outside China; both are +8 now (the Python constant also drives the reply-debt day counts, so moving
+  *that* side would have shifted an analysis number).
+- **CI failures now name the failing tests in an annotation.** The step logs live in blob storage this machine
+  cannot reach - measured: `gh run view --log-failed` timed out 12 times in a row while `gh run view --json` kept
+  working - which made "CI is red" and "nothing is readable" the same sentence, for 60 runs. Annotations travel
+  over the API that does work.
 
 - **README commands are now checked against the real CLI, so a drifted command fails CI instead of a user.** The
   documented failure is from `1.5.0`: 128 commits and two months of drift left the README telling people to run
@@ -31,8 +56,6 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   given the two knowledge bases, the panel and the rest of 1.10.0 landed in between. `--self-test` carries the
   positive controls this repository requires of a scanner (a check must be shown able to go red), and both run in the
   CI `node` job after the build.
-
-## 1.10.0
 
 - **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist
   of directories and globs, and both files sat just outside the patterns: `scripts/data/wechat_emoji.json` (read by
