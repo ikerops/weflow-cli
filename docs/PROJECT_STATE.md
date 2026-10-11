@@ -16,6 +16,10 @@ WeFlow CLI is a local-first command-line tool and MCP server for user-authorized
 - Regression check: `npm test`.
 - Downstream data contract: local JSON export is the first compatibility boundary for `she-love-me` and future consumers; see `docs/DATA_CONTRACT.md`.
 - Supported focus: Windows WeChat 4.x; Linux WeChat 4.x has an NT database path; macOS requires user-provided local access credentials for initialization.
+  The version actually verified on this machine is **4.1.15.13** (2026-10-11) - and the way to read that is the live
+  process's `--user-lib-dir`, **not** the version literal inside `Weixin.exe` (that one is only a fallback for when the
+  primary load path fails; two of this machine's four version *directories* are install leftovers, one of which holds a
+  single file - see `docs/CONTACT_DB_SCHEMA.md`, which also records which directories are actually usable).
 
 ## Verified Capabilities
 
