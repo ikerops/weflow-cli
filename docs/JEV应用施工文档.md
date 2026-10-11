@@ -187,7 +187,7 @@ python scripts/quality_eval.py score <该文件>   # 准确率 + 校准曲线 + 
 - 怎么重排：`sort(key=lambda t: (t[0] is None, -(t[0] or 0.0), t[1]))`（`460`）——**没拿到分的按原序垫到最后，不当 0 分**。新分写进 `rerankScore`（仅非 None 时），原始 `score` 保留。
 - 回退全是 fail-soft（这是设计，活体跑出过 `HTTP 529`）：没有客户端或候选 <2 → 原样返回（`420-421`）；调用异常 → WARN + 原顺序（`442-444`）；全部返回 None → WARN + 原顺序（`455-457`）。
 - **它唯一的真实风险是候选编号错位**：模型拿 `c5` 的内容回答 `c3` 时，最该被选中的那条会**无声下沉**，没有任何报错。`docs/PROJECT_STATE.md:83` 记了这一条。
-- ⚠️ **`--no-rerank` 只在 Python 侧存在**：CLI 的 `search` 组参（`bin/weflow-cli.ts:4719`）没给它通道，要回退得直接跑 Python 脚本。
+- ✅ **`--no-rerank` 现在两边都有**（2026-10-11 接上的通道）：CLI 的 `search` 把它转发给脚本，`--dry-run --json` 的预览里也带 `noRerank`。此前它只在 Python 侧 —— 而 `docs/OPERATIONS.md` 已经在教用户敲 `weflow-cli search "..." --no-rerank`，用户会拿到 `unknown option`。**是文档命令面那道检查发现的**（`scripts/check_readme_commands.py` 扫文档代码块）：它按"今天真实的 CLI"校验，于是把这条缺口指了出来 —— 而只扫两份 README 时它扫不到。新增 `test/search-cli.test.ts` 钉住这类（声明的旗标必须被分类、被读到、该转发的真的转发）。
 
 ### 4.7 通用原则（六个触点共同的形状）
 

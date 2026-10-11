@@ -4919,6 +4919,7 @@ program
     .argument('<query>', '搜索关键词')
     .option('--top-k <n>', '返回数量', '10')
     .option('--line <line>', 'wiki=文章线(默认) / chat=聊天记录 / all=两条都搜', 'wiki')
+    .option('--no-rerank', '不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--dry-run', '仅预览，不读取索引或调用向量服务')
     .option('--yes', '确认执行可能调用云端向量服务的搜索')
@@ -4940,6 +4941,7 @@ program
         action: 'semantic-search.query',
         topK,
         line: opts.line,
+        noRerank: opts.rerank === false,
         readsLocalIndex: true,
         mayUseCloudEmbedding: true,
       }
@@ -4964,7 +4966,11 @@ program
           return
         }
       }
-      const args: string[] = [script, 'search', '--top-k', String(topK), '--line', opts.line]
+      // `--no-rerank` 是**旗标**（不是密钥）⇒ 可以走 argv；查询本身仍然只走 env（见 `privacy-paths` 那条规矩）。
+      // 接这条通道之前，`OPERATIONS.md` 一直在教用户敲 `search --no-rerank`，而 CLI 会答 `unknown option`
+      // —— 同一份文档里 `--line` 是通的，所以它看起来像"能用的旗标"（2026-10-11 由文档命令面那道检查发现）。
+      const args: string[] = [script, 'search', '--top-k', String(topK), '--line', opts.line,
+        ...(opts.rerank === false ? ['--no-rerank'] : [])]
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {
           timeout: 60_000, maxBuffer: 10 * 1024 * 1024,

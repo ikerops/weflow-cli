@@ -27,6 +27,7 @@
     python scripts/check_readme_commands.py --self-test    # 正对照：证明判据是活的
 """
 import argparse
+import glob
 import json
 import os
 import re
@@ -115,6 +116,22 @@ def cli_help(path, cli=None):
     return (proc.stdout + proc.stderr).decode('utf-8', 'replace')
 
 
+def default_files():
+    """默认扫的**用户文档**。
+
+    排除两份按性质记录过去的：`CHANGELOG.md`（发布日志）与 `docs/DECISIONS.md`（决策日志）——
+    它们会成段引用**当时**的命令，拿今天的 CLI 去校验必然假阳性。其余 `docs/*.md` 都扫：
+    2026-10-11 就是这份集合里的 `OPERATIONS.md` 抓到了"文档教用户敲一个 CLI 没有的旗标"
+    （`search --no-rerank`），而只扫两份 README 时它一条也扫不到。
+    """
+    out = ['README.md', 'README.en.md', 'OPERATIONS.md', 'ARCHITECTURE.md',
+           'CONTRIBUTING.md', 'SECURITY.md']
+    out += ['docs/' + os.path.basename(p)
+            for p in sorted(glob.glob(os.path.join(ROOT, 'docs', '*.md')))
+            if os.path.basename(p) != 'DECISIONS.md']
+    return out
+
+
 def capability_commands(cli=None):
     """`capabilities --json` 里那几个**手写**的 `cli:` 命令串 → [(字段路径, 命令行)]。
 
@@ -185,8 +202,10 @@ def self_test():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='校验 README 里的命令在 CLI 里存在')
-    parser.add_argument('--files', nargs='*', default=['README.md', 'README.en.md'])
+    parser = argparse.ArgumentParser(description='校验文档与 capabilities 里的命令在 CLI 里存在')
+    parser.add_argument('--files', nargs='*', default=None,
+                        help='要扫的 markdown（缺省：README + 仓库根那几份 + docs/*.md，'
+                             '排除按性质记录过去的 CHANGELOG 与 DECISIONS）')
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--self-test', action='store_true', help='只跑判据的正对照')
     args = parser.parse_args()
@@ -195,7 +214,7 @@ def main():
         raise SystemExit(self_test())
 
     checked, findings = 0, []
-    for name in args.files:
+    for name in (args.files if args.files else default_files()):
         path = os.path.join(ROOT, name)
         if not os.path.exists(path):
             raise SystemExit('找不到 %s' % path)
@@ -225,14 +244,14 @@ def main():
             source = ('%s（%s）' % (f['file'], f['where'])) if f.get('where') else ('%s:%d' % (f['file'], f['line']))
             print('[FAIL] %s  %s\n       %s —— 写的地方有它，CLI 里没有' % (source, f['command'], f['detail']))
         if findings:
-            print('\n%d 处对不上（共检查 %d 条：README %d + capabilities %d）。'
+            print('\n%d 处对不上（共检查 %d 条：文档 %d + capabilities %d）。'
                   % (len(findings), checked, readme_checked, len(caps)))
         else:
-            print('命令面与 CLI 一致：README %d 条 + capabilities 的 %d 条 `cli:` 串，0 处对不上。'
+            print('命令面与 CLI 一致：文档 %d 条 + capabilities 的 %d 条 `cli:` 串，0 处对不上。'
                   % (readme_checked, len(caps)))
     # 两个面各自的反空扫：少扫一面，"通过"就少一半，那时不该报通过
     if readme_checked == 0:
-        print('反空扫失败：README 里一条命令都没扫到，这次"通过"不作数。')
+        print('反空扫失败：文档里一条命令都没扫到，这次"通过"不作数。')
         return 2
     if not caps:
         print('反空扫失败：`capabilities --json` 里一条 `cli:` 串都没读到，这一半没有被检查。')

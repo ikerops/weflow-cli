@@ -19,6 +19,15 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **`weflow-cli search --no-rerank` now exists.** `docs/OPERATIONS.md` had been telling users to run it while the
+  CLI answered `unknown option` - the flag existed in `scripts/semantic_search.py` all along, the TS command simply
+  never forwarded it, and `docs/DECISIONS.md` (D-032) described it as if it worked. That is the `1.5.0` shape
+  again, caught this time by the command-surface check rather than by a user. The flag is forwarded to the script,
+  the `--dry-run` preview reports `noRerank`, and `test/search-cli.test.ts` pins the class: every declared option of
+  `search` must be classified (argv vs local-only), actually read, and forwarded when it is meant to be. (Its own
+  first version located the wrong command block - `search` also exists as a subcommand elsewhere - so the test now
+  proves it anchored on the right one before asserting anything.)
+
 - **`dist/` no longer ships compiled files whose source is gone.** `tsc` never prunes, so a deleted or renamed
   source leaves `.js` / `.d.ts` / `.map` behind - and `dist/` is on the packaging allowlist, so those went out
   as-is. An audit on 2026-10-11 found four (`dist/src/utils/wechatEmoji.*`, while `src/` had lost that file a
@@ -79,8 +88,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   first version of this check reported "0 problems" from a branch that could never run). It scans fenced code blocks
   only: in prose, "manage with `weflow-cli scene`, or bind..." reads as a subcommand named `or`. A finding is either
   a command that does not exist (a bare word right after a command that has subcommands) or a flag absent from that
-  command's help. On this repository it checks 82 commands and finds 0 mismatches - which is the interesting part,
-  given the two knowledge bases, the panel and the rest of 1.10.0 landed in between. `--self-test` carries the
+  command's help. Its default scan set is the **user-facing docs** (the two READMEs, the root docs, and `docs/*.md`
+  except `CHANGELOG.md` / `DECISIONS.md`, which quote past commands and would false-positive) - scanning only the
+  READMEs would have missed the `--no-rerank` case above. On this repository it checks 272 commands across 24 docs
+  and finds 0 mismatches, which is the interesting part given the two knowledge bases, the panel and the rest of
+  1.10.0 landed in between. `--self-test` carries the
   positive controls this repository requires of a scanner (a check must be shown able to go red), and both run in the
   CI `node` job after the build. **The same check now also covers `capabilities --json`**: its `cli:` fields are
   hand-written (the MCP half of that output is derived from the real registry), the output is the documented entry
