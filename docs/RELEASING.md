@@ -69,6 +69,21 @@ grep -E "新文件名" /tmp/list.txt
 聊天记录里一批表情码原样显示成 `[名字]`，后者让包页面挂着一张裂图。这条测试跟着 `npm test` 跑，
 CI 的 `node` job 也在跑；上面那条人工命令留着，用来核对本次**新加**的文件名。
 
+想验到"**装出来真的能跑**"（最强的一道，代价是多装一次依赖）：把包打进临时目录、再装进一个空
+prefix，然后从**装好的那一份**里问版本。它盯的是白名单之外的另一半 —— 清单对、运行时不成立的情况。
+
+```powershell
+npm pack --pack-destination $env:TEMP
+mkdir $env:TEMP\wf-smoke ; cd $env:TEMP\wf-smoke     # 空目录
+npm install --no-save --no-audit --no-fund "$env:TEMP\weflow-cli-<版本>.tgz"
+node node_modules\weflow-cli\cli.cjs --version
+node node_modules\weflow-cli\cli.cjs --help
+```
+
+2026-10-11 拿 1.10.0 跑过一遍：`ALL_NAMES = 222`（不是只有原图的 118 —— 那正是上一版缺
+`scripts/data/wechat_emoji.json` 时的值）、`[乒乓]`/`[冷汗]`/`[开红包]` 都渲染成对应表情、
+`--version` 答 `1.10.0`。
+
 ## 5. 发布
 
 需要 npm 凭据。`ribiaosu` 账号开了 2FA，所以两条路：

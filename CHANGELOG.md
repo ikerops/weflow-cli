@@ -68,7 +68,9 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   checks what must *not* be in the package, never what must be in it. Note the cost - `logo.png` is a 1254x1254
   unrecompressed 1.4 MB PNG displayed at 280px, so the tarball goes from 10.49 MB to 11.87 MB; shrinking it is a
   separate decision (the panel mascot is already handled that way - a derived, right-sized file rather than the
-  original).
+  original). **Verified on an installed copy** of the 1.10.0 tarball (packed, then `npm install` into a
+  temp prefix on 2026-10-11): `ALL_NAMES = 222` rather than the artwork-only 118, `[乒乓]` / `[冷汗]` /
+  `[开红包]` render as the nearest emoji, and `--version` answers `1.10.0`.
 - **`health_check` no longer calls the two read paths inconsistent just because a message arrived during the
   check.** That row compares the newest message each path reports, and `json` runs first while `html` runs a minute
   or two later - so a message landing in between produced exactly the symptom the row exists to catch (observed on
