@@ -128,10 +128,20 @@ test('detectWechatClient：非 Windows 直接说平台不支持，不是"没问�
 })
 
 test('detectWechatClient：PowerShell 报错时回"未知"，不抛也不假装没问题', async () => {
-  const facts = await detectWechatClient(async () => { throw new Error('powershell 不在') })
-  assert.equal(facts.version, null)
-  assert.equal(facts.running, false)
-  assert.match(facts.note, /没在运行/)
+  // 这条测的是 **Windows 那条路**上 PowerShell 挂了时的反应，所以要把平台钉成 win32 ——
+  // 否则在 Linux 上（CI）`detectWechatClient` 会先走"平台不支持"那一支，连 runner 都不调，
+  // 于是这里断言 `/没在运行/` 必报红（2026-10-11 CI 实测：这是那批里最后一条）。手法同上面
+  // 那条"非 Windows 直接说平台不支持"：测的是**代码的哪一条分支**，不是宿主的平台。
+  const real = process.platform
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+  try {
+    const facts = await detectWechatClient(async () => { throw new Error('powershell 不在') })
+    assert.equal(facts.version, null)
+    assert.equal(facts.running, false)
+    assert.match(facts.note, /没在运行/)
+  } finally {
+    Object.defineProperty(process, 'platform', { value: real, configurable: true })
+  }
 })
 
 test('命令行里取 --wechat-files-path：客户端自己说数据目录在哪', () => {
