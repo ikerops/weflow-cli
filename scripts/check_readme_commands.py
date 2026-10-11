@@ -200,11 +200,36 @@ def check_python_call(doc, lineno, script, rest):
     return out
 
 
-def capability_commands(cli=None):
-    """`capabilities --json` 里那几个**手写**的 `cli:` 命令串 → [(字段路径, 命令行)]。
+ANGLE = re.compile(r'<[^<>]*>')
+ELLIPSIS = re.compile(r'\.\.\.|…')
 
-    只收 `cli` 字段：这个对象的其余部分要么是布尔/契约名，要么（`safety.mcpSurface`）是从真实
-    注册表派生的 —— 派生那半不用这儿管。
+
+def command_forms(text):
+    """把 `capabilities` 里一条命令串拆成**可校验的形式**（这个输出的记法不是 shell 语法）。
+
+    · `<a|b|c>` —— 尖括号里的"或"，取第一项（`export <talker> <json|txt|html|excel>` 是**一条**命令）
+    · `a | b` —— 尖括号**之外**的 `|` 是"两种写法"（`decide --request … | decide --over …`），逐条验
+    · `...` / `…` —— 省略号之后截掉（那部分本来就没写全，验不了）
+
+    2026-10-11 踩过：不知道这三种记法时直接按 `|` 切，8 条串报出 11 个"问题"，**全是噪声**
+    （`<add|remove|enable|…>` 被切成了命令）。
+    """
+    # 取第一项时**去掉尖括号**（按第一项替换）。这一条踩过：先写成"保留尖括号"，于是
+    # `<whitelist|blacklist> <add|rm> <target> --dry-run --json` 这类串在**第一个占位符**处就断了
+    # ——而那个占位符**本身就是命令名**（`whitelist add`）⇒ 旗标被拿去跟**父命令**的 help 比，
+    # 一次报出 6 处"没有这个旗标"，全是假的（换回不带括号后 6 处全消，且与独立探针的结果一致）。
+    # 反方向的代价很小：参数位上的占位符变成普通小写词，路径在那里停下即可（父命令没有子命令时不会误报）。
+    text = ANGLE.sub(lambda m: m.group(0)[1:-1].split('|')[0].strip(), text)
+    text = ELLIPSIS.split(text)[0]
+    return [part.strip() for part in text.split('|') if part.strip()]
+
+
+def capability_commands(cli=None):
+    """`capabilities --json` 里**手写**的命令串 → [(字段路径, 命令行)]。
+
+    收 `cli` **与 `preview`** 两个字段：`preview` 是"两阶段安全路径"里先跑的那一条（用户与 agent
+    都按它来），所以它和 `cli` 一样会被手写漂移。这个对象的其余部分要么是布尔/契约名，要么
+    （`safety.mcpSurface`）是从真实注册表派生的 —— 派生那半不用这儿管。
     """
     cli = cli or os.path.join(ROOT, 'cli.cjs')
     if not os.path.exists(cli):
@@ -220,7 +245,7 @@ def capability_commands(cli=None):
     def walk(node, where):
         if isinstance(node, dict):
             for key, value in node.items():
-                if key == 'cli' and isinstance(value, str):
+                if key in ('cli', 'preview') and isinstance(value, str):
                     out.append((where + '.' + key, value))
                 else:
                     walk(value, where + '.' + key)
@@ -279,7 +304,20 @@ def self_test():
     hyphen = FENCE + '\npy scripts/some-hyphenated-script.py --flag\n' + FENCE + '\n'
     if len(python_invocations(hyphen)) != 1:
         bad.append('脚本名里的连字符没被认出来 —— 那会让整条调用静默漏检')
-    controls = len(CONTROLS) + 5
+    # `capabilities` 命令串的三种记法：尖括号里的"或"取第一项、括号外的 `|` 拆成两种写法、`…` 截断
+    forms = command_forms('export <talker> <json|txt|html|excel>')
+    if forms != ['export talker json']:
+        bad.append('尖括号里的"或"没取第一项：%s' % forms)
+    forms = command_forms('<whitelist|blacklist> <add|rm> <target> --dry-run --json')
+    if forms != ['whitelist add target --dry-run --json']:
+        bad.append('命令名上的占位符没被替换成第一项（那会让路径断在这里）：%s' % forms)
+    forms = command_forms('decide --a --yes | decide --b --yes')
+    if forms != ['decide --a --yes', 'decide --b --yes']:
+        bad.append('括号外的 `|` 没拆成两种写法：%s' % forms)
+    forms = command_forms('scene <add|remove> … --dry-run')
+    if forms != ['scene add']:
+        bad.append('省略号没截断 / 或"或"没取第一项：%s' % forms)
+    controls = len(CONTROLS) + 8
     print('正对照：%d 条，通过 %d 条' % (controls, controls - len(bad)))
     for item in bad:
         print('  ✗ ' + item)
@@ -316,19 +354,23 @@ def main():
             checked += 1
             findings += check_python_call(name, lineno, script, rest)
 
-    # 第二个手写面：`capabilities --json` 的 `cli:` 串（学这个项目的入口，也是手写的）。
+    # 第二个手写面：`capabilities --json` 的 `cli:` 与 `preview:` 串（学这个项目的入口，也是手写的）。
     caps = capability_commands()
+    cap_forms = 0
     for where, command in caps:
-        checked += 1
-        _, problems = audit_line('weflow-cli ' + command, cli_help)
-        findings += [{'file': 'capabilities --json', 'line': 0, 'command': command, 'where': where,
-                      'kind': kind, 'detail': detail} for kind, detail in problems]
-    script_checked = checked - doc_checked - len(caps)
+        for form in command_forms(command):
+            cap_forms += 1
+            checked += 1
+            _, problems = audit_line('weflow-cli ' + form, cli_help)
+            findings += [{'file': 'capabilities --json', 'line': 0, 'command': form, 'where': where,
+                          'kind': kind, 'detail': detail} for kind, detail in problems]
+    script_checked = checked - doc_checked - cap_forms
 
     if args.json:
         print(json.dumps({'checked': checked, 'docChecked': doc_checked,
-                          'scriptChecked': script_checked, 'capabilitiesChecked': len(caps),
-                          'findings': findings}, ensure_ascii=False, indent=2))
+                          'scriptChecked': script_checked, 'capabilityFormsChecked': cap_forms,
+                          'capabilityStringsChecked': len(caps), 'findings': findings},
+                         ensure_ascii=False, indent=2))
     else:
         for f in findings:
             source = ('%s（%s）' % (f['file'], f['where'])) if f.get('where') else ('%s:%d' % (f['file'], f['line']))
@@ -336,11 +378,12 @@ def main():
             missing_side = ('那个脚本没声明' if f['kind'] == 'unknown-script-flag' else 'CLI 里没有')
             print('[FAIL] %s  %s\n       %s —— %s%s' % (source, f['command'], f['detail'], where_it_lives, missing_side))
         if findings:
-            print('\n%d 处对不上（共检查 %d 条：文档命令 %d + 脚本调用 %d + capabilities %d）。'
-                  % (len(findings), checked, doc_checked, script_checked, len(caps)))
+            print('\n%d 处对不上（共检查 %d 条：文档命令 %d + 脚本调用 %d + capabilities %d 种写法）。'
+                  % (len(findings), checked, doc_checked, script_checked, cap_forms))
         else:
-            print('命令面与实现一致：文档命令 %d 条 + `py scripts/…` 调用 %d 条 + capabilities 的 %d 条 `cli:` 串，0 处对不上。'
-                  % (doc_checked, script_checked, len(caps)))
+            print('命令面与实现一致：文档命令 %d 条 + `py scripts/…` 调用 %d 条 + capabilities 的 %d 种写法'
+                  '（来自 %d 条 `cli:`/`preview:` 串），0 处对不上。'
+                  % (doc_checked, script_checked, cap_forms, len(caps)))
     # 反空扫只对**缺省语料**生效：那批文档里一定有命令，扫到 0 条说明判据/提取器坏了，不该报通过。
     # 显式 `--files <夹具>` 时不算失败 —— 夹具本来就可能只含某一类。
     # （"提取器本身还活着"另由 `--self-test` 的三条对照负责；脚本那一面**不做** entry 级反空扫：

@@ -112,6 +112,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   are read as the declaration table. Measured 2026-10-11: **24 documented calls, every script present, every flag
   declared**. The doc-command surface keeps its anti-empty-scan (the default corpus always has commands); an
   explicit `--files <fixture>` no longer trips it, since a fixture may legitimately hold only one kind.
+  **`preview:` strings are covered too** - the two-phase convention's first half is a claim like any other, and it
+  was the half nothing checked (45 `cli:`/`preview:` strings, **46 invocations** once the output's own notation is
+  normalised: `<a|b>` is "or" and keeps its first alternative, a `|` *outside* brackets means two spellings, `…`
+  truncates). That normalisation cost one round: keeping the angle brackets read better but broke the path at
+  placeholders that **are** command names (`<whitelist|blacklist> <add|rm> <target> --dry-run --json`), so it
+  reported six flags as missing that were not - an independently written throwaway probe, using the same rule,
+  found 0, and that agreement is what settled the choice.
 
 - **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist
   of directories and globs, and both files sat just outside the patterns: `scripts/data/wechat_emoji.json` (read by
