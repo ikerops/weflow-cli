@@ -17,7 +17,7 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.10.0
 
 - **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist
   of directories and globs, and both files sat just outside the patterns: `scripts/data/wechat_emoji.json` (read by
