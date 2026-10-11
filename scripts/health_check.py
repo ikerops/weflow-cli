@@ -259,7 +259,13 @@ def html_newest_stamp(out_dir):
 
 
 def check_session_freshness(report):
-    """A read path that silently stops at an old shard shows up here first."""
+    """A read path that silently stops at an old shard shows up here first.
+
+    ⚠️ **但"最旧"与"只是没聊天"是同一个观测**：这一项看的是会话列表里最新那条消息有多旧，
+    而一个人一周没发消息，读数与"读取停在某个旧分片"**完全一样**。所以提示里必须把两种解释
+    都说出来，并且点出判别器在隔壁：`读取路径一致` 绿着 ⇒ 多半只是这段时间没聊天；
+    两项一起红才更像读取断了。**别在这里替人下结论。**
+    """
     _, data = run_json(['sessions', '--limit', '5'])
     sessions = ((data or {}).get('sessions') or [])
     stamps = [s.get('sortTimestamp') or 0 for s in sessions]
@@ -271,7 +277,9 @@ def check_session_freshness(report):
     when = datetime.datetime.fromtimestamp(newest).strftime('%Y-%m-%d %H:%M')
     report.add('会话新鲜度', age <= STALE_SESSION_DAYS,
                f'最新会话 {when}（{age:.1f} 天前）',
-               f'超过 {STALE_SESSION_DAYS} 天未更新，通常意味着读取只覆盖了部分分片')
+               f'超过 {STALE_SESSION_DAYS} 天没有新消息。两种解释：**这段时间没聊天**（最可能）'
+               f'或**读取只覆盖了部分分片** —— 看「读取路径一致」那一项：它绿着就多半是前者，'
+               f'两项一起红才更像读取断了')
 
 
 def check_export_formats(report, talker):

@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -83,6 +84,33 @@ class WechatClientCheckTests(unittest.TestCase):
         self.assertIn('崩溃记录 3 份', row['detail'])
         self.assertIn('2026-10-10', row['detail'])
         self.assertIn('update.data', row['detail'])
+
+
+class SessionFreshnessTests(unittest.TestCase):
+    """"会话很旧"有两种解释，提示里必须**两种都写**，并点出判别器在隔壁那一项。"""
+
+    def run_check(self, sessions):
+        report = hc.Report()
+        with patch.object(hc, 'run_json', lambda args: (0, {'sessions': sessions})):
+            hc.check_session_freshness(report)
+        return report.rows[0]
+
+    def test_很久没消息时两种解释都要说(self):
+        old = time.time() - 30 * 86400
+        row = self.run_check([{'username': 'a', 'sortTimestamp': old}])
+        self.assertFalse(row['ok'])
+        self.assertIn('没聊天', row['hint'], '必须给出"只是没聊天"这个最可能的解释')
+        self.assertIn('读取路径一致', row['hint'], '并且要点出判别器在隔壁那一项')
+        self.assertIn('部分分片', row['hint'])
+
+    def test_新消息时绿且没有那串提示(self):
+        row = self.run_check([{'username': 'a', 'sortTimestamp': time.time() - 60}])
+        self.assertTrue(row['ok'])
+
+    def test_没有时间戳时说实话(self):
+        row = self.run_check([{'username': 'a'}])
+        self.assertFalse(row['ok'])
+        self.assertIn('没有时间戳', row['detail'])
 
 
 class ReadPathArbiterTests(unittest.TestCase):

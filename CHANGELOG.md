@@ -27,6 +27,11 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   disagree the check now **re-reads `json` and arbitrates**: if that read can see the newer message the difference
   was liveness (passes, and says so), and if it still cannot, the row still fails - with the re-read result quoted.
   The extra export only happens in the disagreeing case, so the common path costs nothing more.
+- **The "session freshness" row stops blaming the read path on its own.** It goes red when the newest message in
+  the session list is older than a threshold, and it used to explain that as "usually one shard is being read" -
+  but a week without chatting produces exactly the same reading. The hint now gives both explanations, names the
+  one that is more likely, and points at the row that discriminates between them (if the two read paths agree,
+  nothing is broken).
 - **`health_check` no longer reports the scheduled tasks as "all present and last run succeeded" when it could
   not actually read the result.** That row parses the text `schtasks` prints and looks for the `Last Result` line;
   if a system language or an output-format change takes that line away, both its "failed" and its "missing" lists
