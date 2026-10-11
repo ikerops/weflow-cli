@@ -119,6 +119,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   placeholders that **are** command names (`<whitelist|blacklist> <add|rm> <target> --dry-run --json`), so it
   reported six flags as missing that were not - an independently written throwaway probe, using the same rule,
   found 0, and that agreement is what settled the choice.
+  **CLI invocations written another way are covered too**: `node …/cli.cjs <cmd>` and
+  `npx tsx bin/weflow-cli.ts <cmd>` inside those docs were invisible to the scan (it looked for lines
+  *starting* with `weflow-cli`), yet they name the same commands and the same flags - five of them
+  (`docs/DEEPSEEK_V4_FLASH施工文档.md` x3, `docs/RELEASING.md` x2, and they all check out). They are judged by
+  the same `--help` rule, with one deliberately narrow condition: the file name must be `cli.cjs`/`weflow-cli.ts`,
+  so `node scripts/graph3d_check.mjs --flag` is not compared against the CLI's table. The scan now covers
+  **277** doc commands.
 
 - **The npm package now contains two files it had been silently missing.** `package.json`'s `files` is an allowlist
   of directories and globs, and both files sat just outside the patterns: `scripts/data/wechat_emoji.json` (read by

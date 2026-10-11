@@ -101,6 +101,25 @@ def command_lines(text):
             if (body := _body(stripped)).startswith('weflow-cli ')]
 
 
+CLI_WRAPPER = re.compile(r'\b(?:npx\s+tsx|node)\s+\S*[\\/]?(?:cli\.cjs|weflow-cli\.ts)\s+(.*)$')
+
+
+def cli_wrapped_lines(text):
+    """**换了个写法的 CLI 调用**：`node cli.cjs capabilities --json` → [(行号, 'weflow-cli …')]。
+
+    文档里这种写法有几处（`docs/DEEPSEEK_V4_FLASH施工文档.md`、`docs/RELEASING.md`），它们的命令与
+    旗标和 `weflow-cli …` 是同一套东西，所以用同一个判据（CLI 自己的 `--help`）来验 —— 此前它们
+    **一条都没被扫到**（只认行首的 `weflow-cli `）。要求文件名是 `cli.cjs`/`weflow-cli.ts`：
+    `node scripts/graph3d_check.mjs --flag` 那种是**别的脚本自己的旗标**，不该拿 CLI 的表去比。
+    """
+    out = []
+    for lineno, stripped in fenced_lines(text):
+        m = CLI_WRAPPER.search(_body(stripped))
+        if m and m.group(1).strip():
+            out.append((lineno, 'weflow-cli ' + m.group(1).strip()))
+    return out
+
+
 def python_invocations(text):
     """围栏代码块里的 Python 调用：(行号, 脚本名, 剩余参数)。"""
     out = []
@@ -317,7 +336,13 @@ def self_test():
     forms = command_forms('scene <add|remove> … --dry-run')
     if forms != ['scene add']:
         bad.append('省略号没截断 / 或"或"没取第一项：%s' % forms)
-    controls = len(CONTROLS) + 8
+    # 换了写法的 CLI 调用：那两种写法都认得出，**不**把别的脚本当成 CLI
+    wrapped = FENCE + '\nnode cli.cjs capabilities --json\nnode node_modules\\weflow-cli\\cli.cjs --version\n' + FENCE + '\n'
+    if len(cli_wrapped_lines(wrapped)) != 2:
+        bad.append('`node …/cli.cjs <命令>` 这种写法没被认出来：%s' % cli_wrapped_lines(wrapped))
+    if cli_wrapped_lines(FENCE + '\nnode scripts/graph3d_check.mjs --flag\n' + FENCE + '\n'):
+        bad.append('把别的脚本的调用当成 CLI 了（那会拿 CLI 的表去比它的旗标）')
+    controls = len(CONTROLS) + 10
     print('正对照：%d 条，通过 %d 条' % (controls, controls - len(bad)))
     for item in bad:
         print('  ✗ ' + item)
@@ -343,7 +368,7 @@ def main():
             raise SystemExit('找不到 %s' % path)
         with open(path, encoding='utf-8') as fh:
             text = fh.read()
-        for lineno, body in command_lines(text):
+        for lineno, body in command_lines(text) + cli_wrapped_lines(text):
             checked += 1
             doc_checked += 1
             _, problems = audit_line(body, cli_help)

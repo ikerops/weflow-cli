@@ -38,7 +38,9 @@ py scripts/check_readme_commands.py          # 文档/脚本调用/capabilities 
 最后那条盯的是**用户先发现的那一类漂移**：`1.5.0` 与主线拉开 128 个提交时，用户照着 README 敲
 `init --path` 得到 `unknown option`。它逐级问 CLI 的 `--help`（不复刻命令表），扫**三个手写的命令面**：
 **用户文档**的围栏代码块（两份 README + 仓库根那几份 + `docs/*.md`，排除按性质记录过去的
-`CHANGELOG.md` 与 `docs/DECISIONS.md` —— 它们会成段引用当时的命令）、同一批代码块里的
+`CHANGELOG.md` 与 `docs/DECISIONS.md` —— 它们会成段引用当时的命令；同一批代码块里
+`node …/cli.cjs <命令>`、`npx tsx bin/weflow-cli.ts <命令>` 也算这一面 —— 那是同一套命令换个写法）、
+同一批代码块里的
 `python|py scripts/x.py --flag` 调用（**不跑脚本**，按 AST 读它们的 `add_argument` 声明表 —— 仓库对
 Python 脚本的既定纪律就是不 import 也不运行），以及 `capabilities --json` 里手写的 `cli:` **与 `preview:`**
 串（`preview:` 是两阶段约定的第一步 —— 用户与 agent 都按它来，所以它和 `cli:` 一样会被手写漂移；
