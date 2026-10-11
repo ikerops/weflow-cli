@@ -241,6 +241,20 @@ class ScheduledTasksCheckTests(unittest.TestCase):
         self.assertIn('上次运行失败', row['detail'])
 
     @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
+    def test_还没跑过是它自己的状态不是上次失败(self):
+        """`SCHED_S_TASK_HAS_NOT_RUN`（267011 / 0x41303）＝ 注册之后还没到第一次触发。
+
+        2026-10-11 本机注册这两个任务时实测：原来它落进"上次运行失败"，提示还写着
+        "脚本可能抛异常了" —— 会把刚注册的人引去查一个不存在的异常。**它也不算通过**：
+        这一项要的是"跑过一次且成功"，而一直"没跑过"正是它要防的事。
+        """
+        for raw in ('267011', '0x41303'):
+            row = self.run_check(f'TaskName:   WeFlow Issue Watch\nLast Result: {raw}\n')
+            self.assertFalse(row['ok'], raw)
+            self.assertIn('还没跑过', row['detail'], raw)
+            self.assertNotIn('上次运行失败', row['detail'], raw)
+
+    @unittest.skipIf(os.name != 'nt', '这一项只在 Windows 上做')
     def test_读不出上次结果时不算通过(self):
         """**这条钉的是假绿**：输出里没有那一行（语言/格式变了）⇒ 说"读不出"，不说"成功"。"""
         row = self.run_check('TaskName:  WeFlow Issue Watch\nStatus:  Ready\n')

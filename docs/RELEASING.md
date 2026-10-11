@@ -222,6 +222,23 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
 - 手动跑一次：`py scripts/watch_issues.py`
 - 查看/改频率：`Get-ScheduledTask -TaskName 'WeFlow Issue Watch'`
 
+**两个任务怎么建**（这一节此前只写"交给计划任务"，**命令本身没记下来过** —— 而 `scripts/health_check.py`
+正是按这两个**名字**判红的，所以缺的从来不是判断，是这三行）：
+
+```powershell
+schtasks /create /tn "WeFlow Issue Watch" /sc minute /mo 30 ^
+  /tr "py \"<仓库路径>\scripts\watch_issues.py\""
+schtasks /create /tn "WeFlow Mail Watch" /sc minute /mo 30 ^
+  /tr "py \"<仓库路径>\scripts\watch_mail.py\""
+```
+
+- 查看：`Get-ScheduledTask -TaskName 'WeFlow *'` ／ 撤销：`schtasks /delete /tn "<任务名>" /f`
+- **PATH 不用操心**（计划任务的 PATH 与交互式会话不同，这是这类任务常见的翻车点）：`watch_issues.py`
+  自己带兜底 —— `GH_CANDIDATES = ['gh', r'C:\Program Files\GitHub CLI\gh.exe']`；`py` 是系统启动器
+  （`C:\Windows\py.exe`）。两者都不依赖任务继承的 PATH。
+- `watch_mail.py` 做的是**另一件事**：把白名单来信追加进本地队列 `~/.weflow-mail-queue.jsonl`
+  （不读别人的信、不发信；真正按指令做事要等一个会话在跑）。
+
 ### 发布后自检
 
 ```powershell

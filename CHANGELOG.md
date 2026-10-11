@@ -19,6 +19,15 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **The health check no longer calls a freshly registered task a failure.** A task that has not fired yet reports
+  `SCHED_S_TASK_HAS_NOT_RUN` (`267011` / `0x41303`), and that landed in the "last run failed" branch with the hint
+  "the script probably threw" - sending a new user to hunt an exception that does not exist (measured on this
+  machine when the two watcher tasks were registered on 2026-10-11). It now has its own state, "not run yet", which
+  still counts as **not passing**, since what the row wants is "ran once and succeeded" and a task that never runs
+  is exactly what it exists to catch. Registering those two tasks also made this health check green here for the
+  first time (**10/10**), and `docs/RELEASING.md` now records the registration commands - they had never been
+  written down, even though the check keys off the task names.
+
 - **CI had been failing on every run - at least the last 60 - so nothing it guards was actually being enforced.**
   Three causes, none of them in the feature under test. (1) `wechatClient` split Windows paths with the *platform*
   `path`, so on a Linux runner `basename('D:\WeiXin\4.1.15.13\Weixin.exe')` was the whole string: the version row

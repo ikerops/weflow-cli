@@ -344,7 +344,7 @@ def check_scheduled_tasks(report):
         report.add('计划任务', True, '找不到 schtasks，跳过')
         return
     names = ['WeFlow Issue Watch', 'WeFlow Mail Watch']
-    broken, absent, unreadable = [], [], []
+    broken, absent, unreadable, not_yet_run = [], [], [], []
     for name in names:
         try:
             proc = subprocess.run(['schtasks', '/query', '/tn', name, '/fo', 'LIST', '/v'],
@@ -365,6 +365,13 @@ def check_scheduled_tasks(report):
             # 输出里**没有那个字段**：要么语言/格式变了，要么它没在汇报这一项。
             # 这时该说的是"读不出来"，不是"上次成功"。
             unreadable.append(name)
+        elif result in ('267011', '0x41303'):
+            # `SCHED_S_TASK_HAS_NOT_RUN`（267011 / 0x41303）—— **不是失败**：注册之后还没到
+            # 第一次触发。原来它落进下面那支"上次运行失败"，提示还写着"脚本可能抛异常了"，把刚
+            # 注册的人引去查一个不存在的异常（2026-10-11 本机注册这两个任务时实测到）。
+            # 但也**不算通过**：这一项要的是"跑过一次且成功"，而任务一直"没跑过"正是它要防的事
+            # （触发条件写坏，或设成了"仅在用户登录时运行"而没人登录）。
+            not_yet_run.append(name)
         elif result not in ('0', '0x0'):
             broken.append(f'{name}={result}')
     if broken:
@@ -378,6 +385,10 @@ def check_scheduled_tasks(report):
         report.add('计划任务', False, f'读不出上次运行结果: {", ".join(unreadable)}',
                    'schtasks 的输出格式或系统语言变了 —— 这一项**没有验证**，不代表成功；'
                    '手动跑 `schtasks /query /tn "WeFlow Issue Watch" /fo LIST /v` 看一眼')
+    elif not_yet_run:
+        report.add('计划任务', False, f'还没跑过: {", ".join(not_yet_run)}',
+                   '不算通过 —— 这一项要的是"跑过一次且成功"。刚注册的话等一次触发（30 分钟）；'
+                   '一直如此就查触发条件，以及任务是不是设成了"仅在用户登录时运行"')
     else:
         report.add('计划任务', True, '均在位且上次成功')
 
