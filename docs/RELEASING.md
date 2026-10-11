@@ -90,6 +90,24 @@ node node_modules\weflow-cli\cli.cjs --help
 `scripts/data/wechat_emoji.json` 时的值）、`[乒乓]`/`[冷汗]`/`[开红包]` 都渲染成对应表情、
 `--version` 答 `1.10.0`。
 
+**两个数字口径，免得下一次又花半小时**（2026-10-11 实测）：`npm publish` 的 notice 报
+`package size: 12.5 MB` 用的是**十进制 MB**，而 `npm pack --json` 的 `size` 是**字节**（你按习惯除以
+`1MB` 得到 11.88 是 MiB）—— **同一份 tarball**：12,460,202 字节 = 12.46 MB = 11.88 MiB。
+`unpacked size` 同理（publish 27.9 MB = pack 26.62 MiB，解压实测 27,915,402 字节）。不是
+"publish 比 pack 大"，是两套单位。
+
+**发布时那两条 `npm warn publish … errors corrected` 是修饰性的，不是故障。**
+`bin[weflow-cli]` 那句「cli.cjs was invalid and removed」措辞很吓人，实际只是把 `./cli.cjs` 规范成
+`cli.cjs`；`repository.url` 被改写成 `git+https://…`。**实测证据**：registry 上 `weflow-cli@1.9.0`
+的元数据里 `bin = { 'weflow-cli': 'cli.cjs' }` 完好无损（`npm view weflow-cli@1.9.0 bin repository.url`）
+⇒ `npm i -g` 装出来的命令入口一直都在，**别据此以为发布物少了 bin**。
+（那两条规范化 2026-10-11 已经直接落到仓库里了：`package.json` 的 `bin` 与 `repository.url` 现在就是
+规范形式，发布时不再报这两条 warning，仓库也与 registry 上的一致。）
+
+> ⚠️ **`npm pkg fix` 没有 `--dry-run`**：`npm pkg fix --dry-run` 会把 `--dry-run` 当成不认识的参数**忽略掉**，
+> 然后**直接改你的 `package.json`**（2026-10-11 就是这么被改的 —— 我原以为只是"看看会改什么"）。
+> 想先看结果就用 `git diff package.json` 兜底，别指望它自己停手。
+
 ## 5. 发布
 
 需要 npm 凭据。`ribiaosu` 账号开了 2FA，所以两条路：

@@ -4,7 +4,7 @@
   "description": "让 AI 读懂你的微信 — 公众号日报·聊天导出·知识库搜索·MCP Server",
   "type": "module",
   "bin": {
-    "weflow-cli": "./cli.cjs"
+    "weflow-cli": "cli.cjs"
   },
   "files": [
     "cli.cjs",
@@ -41,7 +41,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/zhuobichen/weflow-cli"
+    "url": "git+https://github.com/zhuobichen/weflow-cli.git"
   },
   "scripts": {
     "build": "tsc",
