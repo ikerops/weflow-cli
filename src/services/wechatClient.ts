@@ -21,7 +21,7 @@
  * 取不到就是 `null` + 一句 `note`，不拿别的来源顶替。
  */
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
@@ -263,7 +263,11 @@ export function summarize(processes: WechatClientProcess[],
   // **版本只跟 `Weixin.exe` 有关**：`WeChatAppEx.exe`（小程序那组）与它在同一张进程表里
   // （后者的命令行上带着 `--wechat-files-path`），但它不加载 `Weixin.dll` —— 拿它的
   // "没带 `--user-lib-dir`"去说事会把"客户端在跑、版本取得到"讲成"取不到"。
-  const launchers = processes.filter(p => basename(p.exe).toLowerCase() === 'weixin.exe')
+  // 用 `win32` 而不是平台 `path`：这里拆的**永远是 Windows 路径**（进程表/命令行给的），
+  // 而平台 `basename` 在别的平台上会把 `D:\WeiXin\4.1.15.13\Weixin.exe` 当成**一个文件名**
+  // —— 于是过滤出 0 个启动器、版本退回"未知"，在 Windows 上还看不出来（CI 的 ubuntu 上红了 4 条）。
+  // 在 Windows 上 `win32.*` 与平台版完全等价，所以目标机器的行为一点没变。
+  const launchers = processes.filter(p => win32.basename(p.exe).toLowerCase() === 'weixin.exe')
   const seen = new Map<string, string>()
   for (const p of launchers) {
     if (!p.loadedDir) continue
@@ -284,7 +288,7 @@ export function summarize(processes: WechatClientProcess[],
     // 目录本身照旧列出来（那是实测到的），只是不给"版本号"这个单一结论。
     note = `有 ${loadedDirs.length} 个不同的目录在使用，不挑一个报版本`
   } else {
-    version = basename(loadedDirs[0])
+    version = win32.basename(loadedDirs[0])
   }
   return {
     running: processes.length > 0,
@@ -353,8 +357,8 @@ export async function detectWechatClient(run: PowershellRunner = defaultRunner):
   // 报告里没有注册表这一段）。只取 `Weixin.exe` 的目录：小程序的目录是插件目录，
   // 那里的版本号子目录不是客户端版本。
   const roots = [...new Set(processes
-    .filter(p => basename(p.exe).toLowerCase() === 'weixin.exe')
-    .map(p => dirname(p.exe))
+    .filter(p => win32.basename(p.exe).toLowerCase() === 'weixin.exe')
+    .map(p => win32.dirname(p.exe))
     .filter(dir => dir && existsSync(dir)))]
   const unusable = roots.flatMap(r => versionDirsUnder(r).unusable)
   const version = summarize(processes, unusable)
