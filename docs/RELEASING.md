@@ -216,6 +216,15 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
   ⚠️ 其中 **`logo.png` 与 `scripts/data/wechat_emoji.json` 两个文件当时确实没进包** —— 那正是
   1.10.0 修掉的缺口（同一件事，两条独立的路都指到它）。
   **结论：1.8.0 那个"发出去的文档再也回不来"没有在 1.9.0 重演** ✅
+- **1.10.0 的出处核过了（2026-10-12，发布当天，三种证据）**：
+  1. registry 上 `weflow-cli@1.10.0` 的 `dist.shasum` = `bb7604fe063d330360d00f89c19069367c509d7a`，与本机
+     `npm pack --dry-run` 报的是**同一个值** ⇒ 发出去的就是我构建的那一份；
+  2. 从 registry 装进一个**空目录**（`npm install --no-save weflow-cli@1.10.0`），用**装好的那份**跑
+     `cli.cjs --version` 得到 `1.10.0`、`--help` 正常（4128 字节、含 `Commands:`）；同时确认 1.9.0 缺的
+     那两个文件这次都在（`logo.png`、`scripts/data/wechat_emoji.json`），而开发用探针
+     `scripts/json_surface_probe.mjs` **不在**包里（`.mjs` 不进包是有意的，见 `test/pack-contents.test.ts`）；
+  3. 两个源都是 1.10.0：官方源与 `registry.npmmirror.com`（`curl -X PUT …/syncs` 受理后约 **4 分钟**生效）。
+  另外**发布日志 0 条告警** —— 下面说的那两条装饰性 normalize 告警确实随 `package.json` 规范化一起消失了。
 
 
 ## 发布后
