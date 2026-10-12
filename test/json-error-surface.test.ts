@@ -12,6 +12,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
 
@@ -58,4 +59,70 @@ test('不带 --json 时，同一条校验仍然给人看散文（不是把 JSON 
   assert.ok(!isSingleJson(r.stdout),
     `人看的这一支不该是 JSON；实际 stdout=${JSON.stringify(r.stdout.slice(0, 200))}`)
   assert.match(r.stdout, /line 必须是 wiki、chat 或 all/)
+})
+
+/** 从 `at`（函数名开头）取出配对括号里的原文；跨行的调用也能取全。 */
+function callArgs(text: string, at: number): string {
+  const open = text.indexOf('(', at)
+  if (open < 0) return ''
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++
+    else if (text[i] === ')') {
+      depth--
+      if (depth === 0) return text.slice(open + 1, i)
+    }
+  }
+  return ''
+}
+
+const VALIDATION_HELPERS = ['parseCliInteger', 'requireCliDate', 'requireCliChoice']
+
+/**
+ * 上面四条是**行为**判据，只覆盖 `--line` 那一族。这一条把整族的**静态**规则钉住：
+ * 声明了 `--json` 的命令里，每个校验 helper 调用都必须把 `opts.json` 传进去 —— 少传一个是**安静**
+ * 的（helper 的默认值是 `json = false`），症状与下面这段历史一模一样：`--line` 的校验被手写四遍，
+ * 三遍漏了 json 分支。
+ *
+ * 2026-10-11 手审过这一族的全部 74 处（60 处 parseCliInteger + 5 处 requireCliDate +
+ * 5 处 requireCliChoice + 4 处手写 `!['…'].includes(opts.X)`），**0 处真缺陷**：唯一少传的
+ * `dbkey --timeout` 在 `--json` 下不可达（命令在更上面就 `INTERACTIVE_REQUIRED` 退出了），
+ * 现在也统一传上，好让这条规则没有例外。4 处手写 `includes` 各自都带着 json 分支 ——
+ * 它们不受这条判据管，新写的应当改用 `requireCliChoice`（见 docs/EXTENDING.md）。
+ */
+test('声明了 --json 的命令里，校验 helper 一律带上 opts.json', () => {
+  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const marks = [...src.matchAll(/\.command\('([^']+)'\)|new Command\('([^']+)'\)/g)]
+    .map(m => ({ at: m.index!, name: m[1] ?? m[2] }))
+  marks.push({ at: src.length, name: '' })
+
+  const bad: string[] = []
+  let seen = 0
+  for (let i = 0; i < marks.length - 1; i++) {
+    const block = src.slice(marks[i].at, marks[i + 1].at)
+    if (!block.includes('.action(')) continue
+    // 行内注释里提到 `--json` 不算声明 —— 判法同 `test/json-surface.test.ts` 的 `declaresJson`。
+    // ⚠️ `lastIndexOf` 只有两个参数：写成 `lastIndexOf('\n', 0, at)` 会用 `'0'` 当搜索串
+    // （实测：整个 `run` 块因此被判成"没声明 --json"而跳过，变异没响，看着像判据有洞而其实是判据自己错）。
+    const declares = [...block.matchAll(/\.option\('--json/g)].some(m => {
+      const lineStart = block.lastIndexOf('\n', m.index!) + 1
+      return !block.slice(lineStart, m.index!).includes('//')
+    })
+    if (!declares) continue
+
+    for (const helper of VALIDATION_HELPERS) {
+      for (const m of block.matchAll(new RegExp(`\\b${helper}\\(opts\\.\\w+`, 'g'))) {
+        seen++
+        if (callArgs(block, m.index!).includes('opts.json')) continue
+        const line = src.slice(0, marks[i].at + m.index!).split('\n').length
+        bad.push(`${marks[i].name}（第 ${line} 行）: ${helper}`)
+      }
+    }
+  }
+
+  // 反空扫：这一族有约 70 处，看到几十处以下就说明切块或正则失效了。
+  assert.ok(seen >= 50, `只看到 ${seen} 处校验调用 —— 判据自己失效了，不是命令变少了`)
+  assert.deepEqual(bad, [],
+    `这些校验忘了把 opts.json 传进去（helper 默认 json=false），JSON 模式下会往 stdout 写彩色散文：`
+    + bad.join('、'))
 })

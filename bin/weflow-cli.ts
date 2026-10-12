@@ -2118,7 +2118,10 @@ program
         process.exit(1)
       }
     } else {
-      const timeout = parseCliInteger(opts.timeout, 'timeout', 1000, 600000)
+      // `opts.json` 也要传：这一行在 `--json` 下**不可达**（上面就 `INTERACTIVE_REQUIRED` 退出了），
+      // 但少传一个是安静的 —— 规则统一成"校验 helper 一律带上它"，判据才写得出来
+      // （`test/json-error-surface.test.ts` 末尾那条静态检查）。
+      const timeout = parseCliInteger(opts.timeout, 'timeout', 1000, 600000, opts.json)
       const result = await keyService.autoGetDbKey(timeout, (msg) => {
         console.log(chalk.gray(`  ${msg}`))
       })

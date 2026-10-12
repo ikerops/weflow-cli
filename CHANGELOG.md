@@ -19,6 +19,28 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **The argument-validation family was audited end to end: 74 sites, zero defects left.** Breakdown: 60
+  `parseCliInteger` calls, 5 `requireCliDate`, 5 `requireCliChoice`, and 4 hand-written `!['a','b'].includes(opts.x)`
+  checks. Exactly one call site was missing its `json` argument - `dbkey --timeout` - and it is **unreachable** under
+  `--json` (that command answers `INTERACTIVE_REQUIRED` further up and exits), so it was harmless; it passes
+  `opts.json` now anyway, which lets the rule have *no* exceptions. `test/json-error-surface.test.ts` asserts it
+  statically (every validation-helper call in a `--json` command carries `opts.json`, ~70 sites seen, anti-empty-scan),
+  because the helper's default is `json = false` and a missing argument is silent - the same silence that let three of
+  the four `--line` copies above lose their JSON half.
+
+  What is *not* covered, and should not be read as covered: the other ~100 `console.log(chalk.red(...))` sites are
+  **runtime** errors (not-configured, no WeChat process, permission denied). Whether they are reachable when `--json`
+  was passed depends on each command's interactive gate, so it takes reading each one, not a scan - a first pass that
+  looked for "no `opts.json` nearby" flagged 305 of them, nearly all progress lines inside commands that answer
+  `INTERACTIVE_REQUIRED` before printing anything.
+
+  Finding the one defect took two rounds against the check itself. First it reported `0 missing` while a planted
+  mutation sat in the file: the `declares --json` test called `block.lastIndexOf('\n', 0, at)` - three arguments to a
+  two-argument method - so it searched backwards for the literal `'0'`, put the line slice on the wrong line, and
+  skipped the entire `run` command block. A mutation that does not fire looks exactly like a hole in the guard; here
+  it was a bug in the check, and an independent Python re-implementation of the same logic is what showed the
+  difference (it reported both sites).
+
 - **A `--json` command's *errors* are JSON too - and the four hand-written copies of that check are now one.**
   `--line` was validated in four commands (`vault search`, `vault rag`, the semantic `search`, `chat`), each with
   its own block, and only the first honoured `--json`: the other three answered an invalid `--line` with colored
