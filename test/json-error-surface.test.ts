@@ -12,7 +12,8 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
@@ -75,6 +76,32 @@ test('不带 --json 时，同一条校验仍然给人看散文（不是把 JSON 
   assert.ok(!isSingleJson(r.stdout),
     `人看的这一支不该是 JSON；实际 stdout=${JSON.stringify(r.stdout.slice(0, 200))}`)
   assert.match(r.stdout, /line 必须是 wiki、chat 或 all/)
+})
+
+/**
+ * `weread` 的失败出口 —— 就是那个被复制了九遍的一行式所在的家族。
+ *
+ * 触发方式选"**没有凭据**"：把 `HOME`/`USERPROFILE` 指到空目录、并去掉 `WEREAD_API_KEY`。
+ * 这样与本机有没有配过微信读书无关，也不碰网络 —— 而 CI 本来就是这个状态，所以它是确定性的。
+ * （本机有凭据时另外实测过一支：`weread stats --mode bogus --json` 也回 `WEREAD_FAILED`。）
+ */
+test('weread --json：没有凭据时 stdout 是一整份 JSON，不是一行散文', () => {
+  const home = mkdtempSync(join(tmpdir(), 'weflow-weread-'))
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home }
+    delete env.WEREAD_API_KEY
+    const r = spawnSync(process.execPath,
+      ['--import', 'tsx', join(process.cwd(), 'bin', 'weflow-cli.ts'), 'weread', 'shelf', '--json'],
+      { cwd: process.cwd(), encoding: 'utf8', env })
+    assert.equal(r.status, 1,
+      `没有凭据时应当以失败退出；stdout=${JSON.stringify(r.stdout.slice(0, 200))}`)
+    const body = JSON.parse(r.stdout)          // 整份解析：多一行散文就抛
+    assert.equal(body.success, false)
+    assert.equal(body.code, 'WEREAD_FAILED')
+    assert.ok(body.error, 'error 里要有原因（这里就是"未设置 WEREAD_API_KEY"）')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 /** 从 `at`（函数名开头）取出配对括号里的原文；跨行的调用也能取全。 */

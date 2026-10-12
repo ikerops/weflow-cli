@@ -39,6 +39,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   any one-line branch that logs prose and exits with no json arm - and it carries a self-control so "the scan sees
   nothing" cannot be confused with "the file has nothing".
 
+  Three states were checked on the real machine, not just reasoned about: with credentials, `weread shelf --json`
+  returns the shelf and `weread stats --mode bogus --json` returns `{success:false, code:'WEREAD_FAILED', error:
+  'API 错误: 参数格式错误'}` (before this change: one line of prose); and with `HOME` pointed at an empty
+  directory, `weread shelf --json` answers the single object `{success:false, code:'WEREAD_FAILED', error:
+  '未设置 WEREAD_API_KEY…'}` - no traceback, no prose. That last state is also CI's, so the behavioural test
+  drives exactly it (empty `HOME`/`USERPROFILE`, `WEREAD_API_KEY` deleted) instead of depending on this machine's
+  credentials or on the network.
+
 - **The argument-validation family was audited end to end: 80 sites, zero defects left.** Breakdown: 60
   `parseCliInteger` calls, 5 `requireCliDate`, 5 `requireCliChoice`, and 10 hand-written value checks in three
   spellings - `!['a','b'].includes(opts.x)` (4), `new Set([…]).has(opts.x)` (1), and a regex `.test(opts.x)` (5).
