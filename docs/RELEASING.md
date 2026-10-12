@@ -225,6 +225,10 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
      `scripts/json_surface_probe.mjs` **不在**包里（`.mjs` 不进包是有意的，见 `test/pack-contents.test.ts`）；
   3. 两个源都是 1.10.0：官方源与 `registry.npmmirror.com`（`curl -X PUT …/syncs` 受理后约 **4 分钟**生效）。
   另外**发布日志 0 条告警** —— 下面说的那两条装饰性 normalize 告警确实随 `package.json` 规范化一起消失了。
+  **tag 打在被发布的那个提交上**：`v1.10.0` → `9baa752`（发布时 HEAD 就是它；随后只有这一个文档提交
+  3cf5605，它不在包里那一份 tarball 的对应关系里 —— 写下来是因为 1.8.0 那次正是"事后不知道 tag 对应哪个
+  提交"）。GitHub Release `v1.10.0` 同样指向它，正文由 `## 1.10.0` 段机械切出（92,213 字符，未触及
+  125,000 上限 ⇒ 未截断），List 上已是 **Latest**。
 
 
 ## 发布后
