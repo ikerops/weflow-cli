@@ -19,6 +19,27 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **Driving every `--json` command in an *unconfigured* state found two more prose-on-stdout failures, and one
+  guard hole.** Method: point `HOME`/`USERPROFILE` at an empty directory and run all 83 driveable `--json` leaves
+  (paths and required positionals asked of the CLI's own `--help`); an unconfigured machine makes each one fail
+  before it touches anything real, so the whole sweep is hermetic and needs no credentials. Seven outputs were not
+  a single JSON: **two were real** - `whitelist add` and `blacklist add` called `resolveTalker(target)` without
+  its machine-mode flag, so in `--json` mode a failed lookup printed `❌ 找不到 "x" 对应的会话…` and a
+  *successful* one printed the `→ 昵称 (wxid)` hint line **before** the JSON that the caller is parsing. Both now
+  pass `!!opts.json`; the human path is unchanged. The other five were the sweep's own noise: two false targets
+  (`mcp-config`, `fav export` use `--json-result`, which `capabilities --json` documents), one 60 s timeout
+  (`wiki graph`, genuinely slow), and two commands that need a *required option* the sweep did not supply
+  (commander's own error, on stderr - a machine caller sees empty stdout, but that is commander's parse error, not
+  this repo's code).
+
+  The `--json-result` false targets were worth chasing: they revealed that `test/json-surface.test.ts` matched
+  `.option('--json` as a **prefix**, so a leaf declaring only `--json-result` passed the "every leaf has a
+  machine-readable flag" check by accident. It now compares the flag name exactly and accepts the two documented
+  spellings (`--json`, and `--json-result` where a file-format argument is also called `json`); a third spelling
+  fails the guard, mutation-checked. The talker family gets a static rule too - every `resolveTalker` call site
+  must pass the machine-mode flag - because the *success*-path half (that hint line) cannot be driven here without
+  editing the user's actual whitelist.
+
 - **The `weread` commands answered their failures in prose, even under `--json`.** Nine call sites (`shelf` /
   `stats` / `notes` ×2 / `search` / `book` / `review` / `discover` / `profile`) were the same copy-pasted
   one-liner: print `✗ <error>` on **stdout** and exit - with the command's own `if (opts.json)` branch sitting

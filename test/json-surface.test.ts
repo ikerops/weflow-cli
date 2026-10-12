@@ -28,13 +28,24 @@ const ALLOWED_WITHOUT_JSON: Record<string, string> = {
 
 const SOURCE = join(process.cwd(), 'bin', 'weflow-cli.ts')
 
-/** 块里有没有**真的**声明 `--json`（行内注释里提到的不算）。 */
+/**
+ * 块里有没有**真的**声明机器可读那一档的旗标（行内注释里提到的不算）。
+ *
+ * 认全名，不认前缀：原来写 `.option('--json`，于是 `--json-result` 会**冒充**通过（2026-10-12 用
+ * 驱动扫描时偶然发现：`fav export --json` 报 `unknown option` 而守卫是绿的）。只允许两种写法：
+ *  · `--json` —— 约定里的那个；
+ *  · `--json-result` —— `fav export` 与 `mcp-config` 用：这两个命令另有一个表示**文件格式**的
+ *    `json` 参数（`-o json` / `<markdown|json>`），叫 `--json` 会分不清是格式还是输出形状。
+ *    两个名字都写进了 `capabilities --json`（`favorites.export`、`mcpConfiguration`）。
+ * 再出现第三种写法，得先在这里加一行并说明理由。
+ */
 function declaresJson(block: string): boolean {
-  for (const m of block.matchAll(/\.option\('--json/g)) {
+  for (const m of block.matchAll(/\.option\('([^']+)'/g)) {
     const at = m.index!
     const lineStart = block.lastIndexOf('\n', at) + 1
     if (block.slice(lineStart, at).includes('//')) continue
-    return true
+    const flag = m[1].split(',').pop()!.trim().split(/\s+/)[0]
+    if (flag === '--json' || flag === '--json-result') return true
   }
   return false
 }

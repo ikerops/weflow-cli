@@ -85,6 +85,28 @@ test('不带 --json 时，同一条校验仍然给人看散文（不是把 JSON 
  * 这样与本机有没有配过微信读书无关，也不碰网络 —— 而 CI 本来就是这个状态，所以它是确定性的。
  * （本机有凭据时另外实测过一支：`weread stats --mode bogus --json` 也回 `WEREAD_FAILED`。）
  */
+/**
+ * 名单类命令的**会话解析失败**。这类命令的 `--json` 失败支原来走不到：`resolveTalker` 自己 catch 掉了
+ * （打散文 + exit），外面那层带着 JSON 支的 catch 根本没机会跑。触发方式同样是"没有配置"（空 HOME），
+ * 所以它是确定性的，也不需要本机数据。
+ */
+for (const group of ['whitelist', 'blacklist']) {
+  test(`${group} add --json：会话解析不了时 stdout 是一整份 JSON`, () => {
+    const home = mkdtempSync(join(tmpdir(), `weflow-${group}-`))
+    try {
+      const r = spawnSync(process.execPath,
+        ['--import', 'tsx', join(process.cwd(), 'bin', 'weflow-cli.ts'), group, 'add', 'x', '--json'],
+        { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home } })
+      assert.equal(r.status, 1, `应当以失败退出；stdout=${JSON.stringify(r.stdout.slice(0, 200))}`)
+      const body = JSON.parse(r.stdout)
+      assert.equal(body.success, false)
+      assert.equal(body.code, 'TALKER_RESOLUTION_FAILED')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+}
+
 test('weread --json：没有凭据时 stdout 是一整份 JSON，不是一行散文', () => {
   const home = mkdtempSync(join(tmpdir(), 'weflow-weread-'))
   try {
@@ -120,6 +142,28 @@ function callArgs(text: string, at: number): string {
 }
 
 const VALIDATION_HELPERS = ['parseCliInteger', 'requireCliDate', 'requireCliChoice']
+
+/**
+ * `resolveTalker(input, quiet, nonInteractive)` 的第二个参数就是"机器模式"：它决定解析失败时发
+ * `TALKER_RESOLUTION_FAILED` 的 JSON 还是打散文，**还**决定成功时要不要打那行 `→ 昵称 (wxid)` 提示。
+ *
+ * 2026-10-12 实测：`whitelist add` / `blacklist add` 两处调用点没传它 —— 失败时 JSON 模式下 stdout 是散文，
+ * 而**成功**时会先把那行提示打在 stdout 上，把后面的 JSON 顶到第二行（这一半只有配置好的机器才看得到，
+ * 空 HOME 的驱动扫描正好看不见）。所以这条判据是静态的：调用点必须带 `opts.json`。
+ */
+test('resolveTalker 的每个调用点都把"机器模式"传进去', () => {
+  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const calls = src.split('\n')
+    .map((line, i) => ({ line, no: i + 1 }))
+    .filter(x => x.line.includes('resolveTalker(') && !x.line.includes('async function resolveTalker'))
+  // 反空扫 + 自对照：判据得先看得见这些调用点（实测 7 处），否则"全都合规"与"没扫到"分不清。
+  assert.ok(calls.length >= 5, `只找到 ${calls.length} 处 resolveTalker 调用，判据像是失效了`)
+
+  const bad = calls.filter(x => !x.line.includes('opts.json'))
+    .map(x => `第 ${x.no} 行：${x.line.trim().slice(0, 90)}`)
+  assert.deepEqual(bad, [],
+    `这些调用点没传机器模式标志（第二个参数），JSON 模式下会打散文、成功时还会污染 stdout：${bad.join(' / ')}`)
+})
 
 /**
  * "一行式、只打散文"的失败分支：同一行里既打彩色散文又 `exit`，且没有 json 支。

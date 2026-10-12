@@ -2344,7 +2344,7 @@ whitelistCmd
       wxid = target
     } else {
       try {
-        wxid = await resolveTalker(target)
+        wxid = await resolveTalker(target, !!opts.json, !!opts.json)
         const sessions = await chatService.listSessions(undefined, 50)
         const match = sessions.find(s => s.username === wxid)
         if (match) displayName = match.displayName || target
@@ -2531,7 +2531,7 @@ blacklistCmd
       wxid = target
     } else {
       try {
-        wxid = await resolveTalker(target)
+        wxid = await resolveTalker(target, !!opts.json, !!opts.json)
         const sessions = await chatService.listSessions(undefined, 50)
         const match = sessions.find(s => s.username === wxid)
         if (match) displayName = match.displayName || target
