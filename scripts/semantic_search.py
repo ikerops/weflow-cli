@@ -182,50 +182,76 @@ def get_name_map(contact_db, contact_key, contact_salt):
     return name_map
 
 
-def collect_chat_messages(conn, name_map, days=90):
-    """Collect chat messages for indexing."""
-    c = conn.cursor()
+def collect_chat_messages(conns, name_map, days=90, per_talker=500):
+    """Collect chat messages for indexing. `conns` 是**分片连接列表**，不是单个连接。
+
+    微信 4.x 的消息按分片存，而且**每片要自己派生的钥匙**才打得开（`nt_decrypt.
+    derive_database_key`）。本机实测四片：`message_3.db` 里是近两天的消息，而配置指向的
+    `message_0.db` 最新一条是 44 天前的。这里原来只开 `ntDbPath` 一个文件、还用裸的全局钥匙 ——
+    于是索引的聊天半边会**静默地收进旧数据**（症状与 issue #10 的"只读到半个月前"同形）。
+    索引是要花钱嵌的，收错数据比报错更贵。
+
+    三处随之改动，各有理由：
+      · 会话清单从所有分片取并集 —— 新会话的表可能只存在于新分片里；
+      · 不再 `[:100]` 截断：本机 122 个会话，而且那 100 个是**无排序取前 100**（等于随机）；
+      · id 里带 `rowid`：实测一张表里 12,106 条消息只落在 12,058 个不同秒上，只按 `talker:ts`
+        去重会静默顶掉同秒的多条。
+    """
     now = datetime.now(TZ)
     start_ts = int((now - timedelta(days=days)).timestamp())
 
-    try:
-        c.execute("SELECT user_name FROM Name2Id WHERE is_session = 1")
-        sessions = [r[0] for r in c.fetchall()]
-    except:
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'")
-        sessions = [r[0] for r in c.fetchall()]
-
-    items = []
-    for talker in sessions[:100]:  # Limit to avoid too many
-        tbl = f"Msg_{hashlib.md5(talker.encode()).hexdigest()}"
+    sessions = []
+    for conn in conns:
+        c = conn.cursor()
         try:
-            c.execute(f'SELECT COUNT(*) FROM sqlite_master WHERE name="{tbl}"')
-            if c.fetchone()[0] == 0:
+            c.execute("SELECT user_name FROM Name2Id WHERE is_session = 1")
+            rows = [r[0] for r in c.fetchall()]
+        except Exception:
+            try:
+                c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'Msg_%'")
+                rows = [r[0] for r in c.fetchall()]
+            except Exception:
+                rows = []
+        for name in rows:
+            if name not in sessions:
+                sessions.append(name)
+
+    items, seen = [], set()
+    for talker in sessions:
+        tbl = f"Msg_{hashlib.md5(talker.encode()).hexdigest()}"
+        for conn in conns:
+            c = conn.cursor()
+            try:
+                c.execute('SELECT COUNT(*) FROM sqlite_master WHERE name=?', (tbl,))
+                if c.fetchone()[0] == 0:
+                    continue
+                c.execute(f'''
+                    SELECT rowid, create_time, real_sender_id, message_content
+                    FROM "{tbl}"
+                    WHERE create_time >= ?
+                    ORDER BY create_time DESC
+                    LIMIT ?
+                ''', (start_ts, per_talker))
+                rows = c.fetchall()
+            except Exception:
                 continue
-
-            c.execute(f'''
-                SELECT create_time, real_sender_id, message_content
-                FROM "{tbl}"
-                WHERE create_time >= ?
-                ORDER BY create_time DESC
-                LIMIT 500
-            ''', (start_ts,))
-
-            for ts, sender, content in c.fetchall():
+            for rid, ts, sender, content in rows:
                 if not content or not isinstance(content, str) or len(content) < 10:
                     continue
+                item_id = f"chat:{talker}:{ts}:{rid}"
+                if item_id in seen:
+                    continue
+                seen.add(item_id)
                 sender_name = name_map.get(sender, sender) if sender else name_map.get(talker, talker)
                 dt = datetime.fromtimestamp(ts, tz=TZ)
                 items.append({
-                    "id": f"chat:{talker}:{ts}",
+                    "id": item_id,
                     "type": "chat",
                     "talker": name_map.get(talker, talker),
                     "sender": sender_name,
                     "time": dt.strftime('%Y-%m-%d %H:%M'),
                     "text": content[:500],
                 })
-        except:
-            pass
 
     return items
 
@@ -325,11 +351,25 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
 
     # Collect items
     items = []
+    shards_failed = []
     try:
-        conn = open_db(nt_db, nt_key, nt_salt)
-        chat_items = collect_chat_messages(conn, name_map, days=days)
-        items.extend(chat_items)
-        conn.close()
+        import nt_decrypt  # 懒加载：纯逻辑路径（关键词/重排/测试）不该被它拖住
+        passphrase = decrypt_lock(config.get('favPassphrase') or config.get('decryptKey') or '')
+        pairs, failures = nt_decrypt.connect_message_shards_detailed(
+            nt_db, nt_key, nt_salt, passphrase)
+        shards_failed = [f['name'] for f in failures]
+        if shards_failed:
+            print(f"[WARN] {len(shards_failed)} 个分片读不了: {', '.join(shards_failed)}",
+                  file=sys.stderr)
+        try:
+            chat_items = collect_chat_messages([c for _p, c in pairs], name_map, days=days)
+            items.extend(chat_items)
+        finally:
+            for _p, c in pairs:
+                try:
+                    c.close()
+                except Exception:
+                    pass
     except Exception as e:
         print(f"[WARN] 聊天消息收集失败: {e}", file=sys.stderr)
 
@@ -342,7 +382,8 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
 
     if not new_items:
         return {"status": "up_to_date", "total": len(items),
-                "chatDays": days, "articleDays": article_days}
+                "chatDays": days, "articleDays": article_days,
+                "shardsFailed": shards_failed}
 
     # Generate embeddings
     print("生成 embeddings...", file=sys.stderr)
@@ -381,6 +422,9 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
         "new": len(new_items),
         "chatDays": days,
         "articleDays": article_days,
+        # 分片读不全时**要报出来**：`shardsFailed` 是"全读了"与"读了能读到的"之差，
+        # 正是覆盖度报告存在的理由（nt_decrypt.connect_message_shards_detailed 的原话）。
+        "shardsFailed": shards_failed,
     }
 
 

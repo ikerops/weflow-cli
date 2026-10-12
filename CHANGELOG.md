@@ -17,6 +17,26 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **The semantic index would have embedded only the *older* part of its window, silently.** `semantic_search.py`
+  opened exactly one file — `config.ntDbPath` — with the account's global key. WeChat 4.x spreads messages across
+  shards and **each shard needs its own derived key**; the repo already had that path
+  (`nt_decrypt.connect_message_shards_detailed`, which also reports *which* shards failed). Measured here on
+  2026-10-13 before the fix: the configured `message_0.db` holds 67,292 messages whose newest is **2026-08-30**,
+  while `message_3.db` holds 16,081 whose newest is **that same day's date** — so a build would have indexed 1,396
+  chat messages and **nothing newer than six weeks ago**, missing 5,217 that a correct read finds in the same
+  90-day window (7-day window: 0 → 376). Three quieter losses went with it: the session list was `[:100]` —
+  unsorted, so effectively arbitrary, on a machine with 122 sessions; the id was `chat:<talker>:<ts>`, which merges
+  messages inside one second (measured: 12,106 rows on 12,058 distinct seconds); and one conversation's table can
+  exist in several shards, so a shared id would double-count. The build result now reports `shardsFailed`, because
+  "read everything" and "read what happened to be reachable" must not look alike.
+
+  `test/semantic_shards_test.py` pins each of the three with fake shard connections (no sqlcipher, no real vault),
+  and all three mutations — single shard, no-rowid id, `[:100]` — turn their own test red. **This is also why the
+  index is still not built**: building it first would have spent the embedding budget on a month the user is not
+  asking about. Closing that now costs one `search-index --yes` once `dashscopeApiKey` is set.
+
 ## 1.10.0
 
 - **`mcp-config --json-result` printed a tool list *after* the JSON.** Its read path printed the config JSON and
