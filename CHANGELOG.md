@@ -19,6 +19,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **`mcp-config --json-result` printed a tool list *after* the JSON.** Its read path printed the config JSON and
+  then, unconditionally, the `可用的 MCP 工具` listing and a `复制以上 JSON…` line on **stdout** - so
+  `mcp-config --json-result | jq` died at line 14, even though `capabilities --json` names `--json-result` as this
+  command's machine form. (The write path already returned early with its own JSON; only the read path leaked.)
+  It was found by driving the **read-only** commands on a *configured* machine - the other half of the sweep
+  described below, and the half that an unconfigured HOME cannot see, because a successful path is the only place
+  this appears. Both halves are now a local tool, `scripts/json_surface_probe.mjs` (`--unconfigured` /
+  `--read-only`): it reports what it drove and which commands it skipped, exits non-zero on findings, and prints
+  the one class it deliberately does not count (commander's own missing-required-option errors, which is a design
+  item, not a missing JSON arm). It is **not** a CI check - it needs a configured machine and one read-only
+  command legitimately takes minutes - so the fix is guarded by a test that does run in CI
+  (`test/json-error-surface.test.ts`: one JSON, no tool list).
+
 - **Driving every `--json` command in an *unconfigured* state found two more prose-on-stdout failures, and one
   guard hole.** Method: point `HOME`/`USERPROFILE` at an empty directory and run all 83 driveable `--json` leaves
   (paths and required positionals asked of the CLI's own `--help`); an unconfigured machine makes each one fail

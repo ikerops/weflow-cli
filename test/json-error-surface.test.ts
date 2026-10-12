@@ -144,6 +144,21 @@ function callArgs(text: string, at: number): string {
 const VALIDATION_HELPERS = ['parseCliInteger', 'requireCliDate', 'requireCliChoice']
 
 /**
+ * `mcp-config` 的读路径：机器模式（`--json-result`）下 stdout 只该有那份配置 JSON。
+ *
+ * 原来那段"可用的 MCP 工具"清单和"复制以上 JSON…"是**无条件**打的 ⇒ `mcp-config --json-result | jq`
+ * 断在第 14 行。写路径（`--output --yes --json-result`）早就早退发 JSON，只有读路径漏了。
+ * 这条不需要配置、不需要数据，所以 CI 跑得动。
+ */
+test('mcp-config --json-result：stdout 只有那份 JSON，没有工具清单', () => {
+  const r = runCli(['mcp-config', '--json-result'])
+  assert.equal(r.status, 0, `应当成功退出；stdout=${JSON.stringify(r.stdout.slice(0, 200))}`)
+  const body = JSON.parse(r.stdout)          // 整份解析：后面多一段散文就抛
+  assert.ok(body.mcpServers, 'JSON 里应当有 mcpServers')
+  assert.ok(!r.stdout.includes('可用的 MCP 工具'), '人看的工具清单不该出现在机器模式里')
+})
+
+/**
  * `resolveTalker(input, quiet, nonInteractive)` 的第二个参数就是"机器模式"：它决定解析失败时发
  * `TALKER_RESOLUTION_FAILED` 的 JSON 还是打散文，**还**决定成功时要不要打那行 `→ 昵称 (wxid)` 提示。
  *

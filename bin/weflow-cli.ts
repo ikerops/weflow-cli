@@ -7327,6 +7327,10 @@ program
       console.log(chalk.gray('AI 助手现在可以使用以下工具：'))
     } else {
       console.log(json)
+      // 机器模式到这里就结束：下面那段工具清单与"复制以上 JSON…"是**给人看的**，原来无条件打在
+      // stdout 上 ⇒ `mcp-config --json-result | jq` 断在第 14 行（2026-10-12 由只读驱动扫描发现；
+      // 写路径本来就早退发 JSON，所以只有读路径这一处漏）。
+      if (opts.jsonResult) return
     }
     console.log(chalk.cyan('\n可用的 MCP 工具：'))
     const STATIC_TOOLS: Array<[string, string]> = [
