@@ -324,6 +324,12 @@ AI 调用前应生成不含正文的预览，说明数据范围、是否联网�
 5. 为搜索结果增加消息/文章引用对象，不改变现有原始数据字段。
 6. 为 MCP 增加不透明游标和稳定错误码。
 7. 使用合成数据建立同步、搜索、导出和 MCP 的端到端验收样例。
+8. 让**参数解析错误**在 `--json` 下也走 JSON。现在漏了必需选项时 commander 直接往 stderr 打一句、stdout 是**空的**
+   （2026-10-12 用"未配置状态驱动全部 `--json` 叶子命令"量到：83 条里 2 条命中，`scene add` / `scene bind`）。
+   做法大致是给 `program` 装一个会抛的出口（`exitOverride` + `configureOutput`），捕获后若 argv 里有 `--json`
+   就发 `{success:false, code:'INVALID_ARGUMENT', error:'<commander 那句>'}`。**代价**是 `--help` / `--version`
+   也走同一条出口，而全库的 `--help` 调用面很宽（含 `scripts/check_readme_commands.py` 那 277+ 条文档命令），
+   所以要先有一条覆盖 `--help`/`--version` 的判据再动 —— 否则把帮助信息弄坏的后果比这点收益大得多。
 
 首轮完成后，再根据实际失败记录决定是否进入阅读状态、AI 执行层和助手收发队列，避免在数据边界尚未稳定时继续扩大功能面。
 
