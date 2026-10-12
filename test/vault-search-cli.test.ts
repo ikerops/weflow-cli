@@ -56,6 +56,11 @@ test('vault search --json 被接受，且 stdout 是一整份 JSON', () => {
 
 test('vault search 默认是人类可读，不是 JSON', () => {
   const r = runVaultSearch(['x'])
+  // 先分清"没跑起来"与"跑起来但输出变了"。2026-10-12 实测过前者：机器休眠打断那次跑，子进程什么都没回，
+  // 而下一条断言把空 stdout 报成了"脚本的默认输出被改了" —— 诊断指向了错误的方向（单独重跑即通过）。
+  assert.equal(r.status, 0,
+    `vault search 没跑起来（exit=${r.status}）；stdout=${JSON.stringify(r.stdout.slice(0, 200))}，`
+    + `stderr=${JSON.stringify((r.stderr || '').slice(0, 200))}`)
   assert.ok(!isSingleJson(r.stdout),
     `默认输出不该是 JSON —— 把 '--json' 重新硬编码进参数表就会让这条红；`
     + `实际 stdout=${JSON.stringify(r.stdout.slice(0, 200))}`)

@@ -19,6 +19,26 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
+- **The `weread` commands answered their failures in prose, even under `--json`.** Nine call sites (`shelf` /
+  `stats` / `notes` ×2 / `search` / `book` / `review` / `discover` / `profile`) were the same copy-pasted
+  one-liner: print `✗ <error>` on **stdout** and exit - with the command's own `if (opts.json)` branch sitting
+  *after* it, so `weread shelf --json` could only answer a failure with a line of prose. They now go through one
+  `failWeread` helper whose machine arm is `{success:false, code:'WEREAD_FAILED', error}`. The human arm is
+  untouched (still `console.log`, not `stderr`): moving CLI errors to stderr is a separate consistency job, the
+  repo currently does both, and it is not smuggled into this fix.
+
+  Finding them took three passes over a filter that kept being wrong. "Prose log with no `opts.json` nearby" left
+  305 candidates, nearly all progress lines inside commands that exit early with `INTERACTIVE_REQUIRED`; also
+  skipping commands that have any json gate above left 12, of which 5 were the weread family - but the family is
+  **nine**, because four more sat three lines below an *unrelated* `opts.json` (a `parseCliInteger` call) and so
+  looked handled. Grepping the actual idiom (`!res.ok`) and reading all nine is what found them; the window
+  around a line cannot tell "mentions `opts.json`" from "is governed by `opts.json`", which is the same
+  distinction that fooled one of the two guards earlier the same night. What is *not* claimed: the other ~100
+  runtime error sites are still unaudited, which is now stated where the family is described rather than left
+  implied. One tripwire guards the shape that got copied nine times - `test/json-error-surface.test.ts` fails on
+  any one-line branch that logs prose and exits with no json arm - and it carries a self-control so "the scan sees
+  nothing" cannot be confused with "the file has nothing".
+
 - **The argument-validation family was audited end to end: 80 sites, zero defects left.** Breakdown: 60
   `parseCliInteger` calls, 5 `requireCliDate`, 5 `requireCliChoice`, and 10 hand-written value checks in three
   spellings - `!['a','b'].includes(opts.x)` (4), `new Set([…]).has(opts.x)` (1), and a regex `.test(opts.x)` (5).

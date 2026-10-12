@@ -95,6 +95,41 @@ function callArgs(text: string, at: number): string {
 const VALIDATION_HELPERS = ['parseCliInteger', 'requireCliDate', 'requireCliChoice']
 
 /**
+ * "一行式、只打散文"的失败分支：同一行里既打彩色散文又 `exit`，且没有 json 支。
+ *
+ * `weread` 的 9 个调用点就是这么被复制粘贴出来的（shelf / stats / notes×2 / search / book / review /
+ * discover / profile），命令的 `if (opts.json)` 支在它后面 ⇒ JSON 模式下 stdout 只有一行 `✗ …`。
+ *
+ * **这条只认这一种形状** —— 同样的缺陷写成多行就躲过去了，所以它不是"运行时错误都合规"的证明，
+ * 只是"这个被复制了九遍的写法别再回来"的绊线。运行时错误路径这一族**没有**审计过（要逐条读，
+ * 见 docs/EXTENDING.md 那段）。
+ */
+function isProseOnlyFailureBranch(line: string): boolean {
+  const trimmed = line.trimStart()
+  // 注释行不算：注释里引用旧代码是常事（这条判据自己的说明里就写了一个例子）。
+  if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return false
+  if (!line.includes('console.log(chalk.')) return false
+  if (!line.includes('process.exit(1)')) return false
+  return !line.includes('opts.json')
+}
+
+test('不再有"一行式、只打散文"的失败分支', () => {
+  // 自对照：判据认不认这个形状 —— 否则"扫不到"与"文件里没有"完全一样。
+  assert.equal(isProseOnlyFailureBranch('  if (!r.ok) { console.log(chalk.red(`x`)); process.exit(1) }'), true)
+  assert.equal(isProseOnlyFailureBranch('  if (!r.ok) { if (opts.json) console.log(JSON.stringify({})); process.exit(1) }'), false)
+  assert.equal(isProseOnlyFailureBranch('    // 例：{ console.log(chalk.red(x)); process.exit(1) }'), false)
+  assert.equal(isProseOnlyFailureBranch("  console.log(chalk.red('只是一条日志'))"), false)
+
+  const src = readFileSync(join(process.cwd(), 'bin', 'weflow-cli.ts'), 'utf8')
+  const bad = src.split('\n')
+    .map((line, i) => ({ line, no: i + 1 }))
+    .filter(x => isProseOnlyFailureBranch(x.line))
+    .map(x => `第 ${x.no} 行：${x.line.trim().slice(0, 90)}`)
+  assert.deepEqual(bad, [],
+    `这些失败分支只有散文、没有 json 支：机器调用方在 stdout 上拿到的就是这行字。${bad.join(' / ')}`)
+})
+
+/**
  * 上面四条是**行为**判据，只覆盖 `--line` 那一族。这一条把整族的**静态**规则钉住：
  * 声明了 `--json` 的命令里，每个校验 helper 调用都必须把 `opts.json` 传进去 —— 少传一个是**安静**
  * 的（helper 的默认值是 `json = false`），症状与下面这段历史一模一样：`--line` 的校验被手写四遍，
