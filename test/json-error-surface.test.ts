@@ -8,7 +8,7 @@
  * `chat`）没有。同一份判断写四遍就有三遍漏 —— 现在四处都走 `requireCliChoice`，与
  * `parseCliInteger` / `requireCliDate` 同一条约定（错误也走 JSON）。
  *
- * 判据选**行为**：这四条都在读任何本地数据**之前**返回，所以 CI 里（没有配置、没有数据库）同样成立。
+ * 判据选**行为**：这些命令都在读任何本地数据**之前**返回，所以 CI 里（没有配置、没有数据库）同样成立。
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
@@ -31,15 +31,32 @@ function isSingleJson(text: string): boolean {
   }
 }
 
-const COMMANDS_WITH_LINE: [string, string[]][] = [
-  ['vault search', ['vault', 'search', 'x', '--line', 'zzz', '--json']],
-  ['vault rag', ['vault', 'rag', 'q', '--line', 'zzz', '--json']],
-  ['search', ['search', 'x', '--line', 'zzz', '--json']],
-  ['chat', ['chat', 'q', '--line', 'zzz', '--json']],
+/**
+ * 被驱动的校验点，两条来源：
+ *  · `--line` 那一族 —— 同一份判断手写过四遍，其中三遍丢了 json 分支；
+ *  · 手写的**取值**校验，三种写法各取一个：`![…].includes(opts.x)`（`vault sync-weread`）、
+ *    `new Set([…]).has(opts.x)`（`pipeline run`）、写在 action 里的 `chat-stats` / `review`。
+ *
+ * 路径是问 CLI 自己拿的（`--help` 的 BFS）：`sync-weread` 在 `vault` 下、`run` 在 `pipeline` 下，
+ * 而顶层另有一个同名的 `assistant run` —— 按名字猜父子会钉错命令。
+ *
+ * 两个**已知缺口**，别把这条测试读成"全都覆盖了"：
+ *  · `export --contract` 的校验在 `resolveTalker()` **之后**，要真配置才走得到（本机验过，CI 不行）；
+ *  · 手写的那几处只发 `field`、不发人类可读的 `error`（helper 两样都发）—— 所以这里只断言字段名。
+ */
+const VALIDATION_CASES: { name: string; args: string[]; field: string }[] = [
+  { name: 'vault search', args: ['vault', 'search', 'x', '--line', 'zzz', '--json'], field: 'line' },
+  { name: 'vault rag', args: ['vault', 'rag', 'q', '--line', 'zzz', '--json'], field: 'line' },
+  { name: 'search', args: ['search', 'x', '--line', 'zzz', '--json'], field: 'line' },
+  { name: 'chat', args: ['chat', 'q', '--line', 'zzz', '--json'], field: 'line' },
+  { name: 'vault sync-weread', args: ['vault', 'sync-weread', '--type', 'zzz', '--json'], field: 'type' },
+  { name: 'chat-stats', args: ['chat-stats', '--period', 'zzz', '--json'], field: 'period' },
+  { name: 'review', args: ['review', '--engine', 'zzz', '--json'], field: 'engine' },
+  { name: 'pipeline run', args: ['pipeline', 'run', '--engine', 'zzz', '--json'], field: 'engine' },
 ]
 
-for (const [name, args] of COMMANDS_WITH_LINE) {
-  test(`${name}：--json 模式下 --line 不合法时 stdout 仍是一整份 JSON`, () => {
+for (const { name, args, field } of VALIDATION_CASES) {
+  test(`${name}：--json 模式下取值不合法时 stdout 仍是一整份 JSON`, () => {
     const r = runCli(args)
     assert.equal(r.status, 1, `${name} 应当在参数校验处退出 1`)
     assert.ok(isSingleJson(r.stdout),
@@ -48,8 +65,7 @@ for (const [name, args] of COMMANDS_WITH_LINE) {
     const body = JSON.parse(r.stdout)
     assert.equal(body.success, false)
     assert.equal(body.code, 'INVALID_ARGUMENT')
-    assert.equal(body.field, 'line', '要指出是哪个字段不合法')
-    assert.match(body.error, /wiki/, '错误里要写清合法取值')
+    assert.equal(body.field, field, '要指出是哪个字段不合法')
   })
 }
 

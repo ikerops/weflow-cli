@@ -19,14 +19,26 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## 1.10.0
 
-- **The argument-validation family was audited end to end: 74 sites, zero defects left.** Breakdown: 60
-  `parseCliInteger` calls, 5 `requireCliDate`, 5 `requireCliChoice`, and 4 hand-written `!['a','b'].includes(opts.x)`
-  checks. Exactly one call site was missing its `json` argument - `dbkey --timeout` - and it is **unreachable** under
+- **The argument-validation family was audited end to end: 80 sites, zero defects left.** Breakdown: 60
+  `parseCliInteger` calls, 5 `requireCliDate`, 5 `requireCliChoice`, and 10 hand-written value checks in three
+  spellings - `!['a','b'].includes(opts.x)` (4), `new Set([…]).has(opts.x)` (1), and a regex `.test(opts.x)` (5).
+  Exactly one call site was missing its `json` argument - `dbkey --timeout` - and it is **unreachable** under
   `--json` (that command answers `INTERACTIVE_REQUIRED` further up and exits), so it was harmless; it passes
   `opts.json` now anyway, which lets the rule have *no* exceptions. `test/json-error-surface.test.ts` asserts it
   statically (every validation-helper call in a `--json` command carries `opts.json`, ~70 sites seen, anti-empty-scan),
   because the helper's default is `json = false` and a missing argument is silent - the same silence that let three of
   the four `--line` copies above lose their JSON half.
+
+  **The first count was 74, and the missing six are the interesting part**: that pass defined the family as
+  "`parseCliInteger` + the two helpers + `![…].includes(opts.x)`" and so could not see a `Set.has` check in
+  `pipeline run` or five regex-validated fields - a family defined by *one spelling* of the thing it is looking for.
+  Re-measuring with the wider definition found all six, and all six already answered JSON correctly, so the
+  conclusion survived; what did not survive was the number, which is why the correction is written down rather than
+  quietly edited. Behaviour now covers the hand-written branch too: four more cases in `test/json-error-surface.test.ts`
+  drive one command per spelling (`vault sync-weread`, `chat-stats`, `review`, `pipeline run`) with an invalid value
+  under `--json`. Two gaps stay open and are named in that file: `export --contract`'s check runs after
+  `resolveTalker()` and so needs a configured machine (**verified here, not in CI**), and the hand-written branches
+  emit `field` but not the human-readable `error` string the helper includes.
 
   What is *not* covered, and should not be read as covered: the other ~100 `console.log(chalk.red(...))` sites are
   **runtime** errors (not-configured, no WeChat process, permission denied). Whether they are reachable when `--json`
