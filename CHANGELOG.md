@@ -17,6 +17,26 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Two defects in 1.11.0's document export, both found by looking at a real export instead of the code.**
+  Re-exporting one 1,914-message conversation (29 documents on disk) and then checking that every link
+  *resolves* turned up two files that would have been unopenable in the reader's own editor:
+
+  1. A document whose name contains a half-width parenthesis - `…开题报告(2).pdf` - landed in the link target
+     as-is, and **every markdown renderer ends a target at the first `)`**, so the link stopped at `…报告(2`
+     and opened nothing. A space breaks it the same way (the target ends at whitespace). Targets are now
+     percent-encoded per path segment (`%282%29`, `%20`) while the link text stays the original name and
+     Chinese characters stay literal - `%E5%…` would be correct but unreadable.
+  2. The 80-character filename limit was applied to the whole name, so a long title lost its **extension**:
+     one file landed as `Chang 等 - 2022 - Environmental Justice Assessment of Fine Particles, Ozone, and`
+     with no `.pdf`, leaving the OS and every editor without a clue how to open it. The limit now applies to
+     the stem, with the extension kept.
+
+  Both are pinned by tests over the exact real names (`test/export_document_test.py`), and both were
+  **invisible to the code and to the existing tests** - the first pass "worked" and produced a complete-looking
+  asset directory. What caught them was asking whether what got written can actually be *opened*.
+
 ## 1.11.0
 
 - **Documents now travel with the export — all five formats, bodies included.** The same user report that asked

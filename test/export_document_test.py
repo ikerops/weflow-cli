@@ -15,9 +15,11 @@ import importlib.util
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
@@ -178,6 +180,55 @@ class WriteDocumentAssetTests(unittest.TestCase):
             _n, _mf, _new = eh.write_assets(tmp, '会话', [item])
             self.assertEqual((eh.FILE_ASSET_STATE['exported'], eh.FILE_ASSET_STATE['written']), (1, 0),
                              '第二遍没有新拷贝，但"这份文档在不在"必须还是 1')
+
+    def test_link_target_is_encoded_so_parentheses_and_spaces_cannot_break_it(self):
+        """真机踩到：`…开题报告(2).pdf` 写成 `[名](…报告(2).pdf)`，渲染器在**第一个半角 `)`** 处截断，
+        点开是空的；文件名带**空格**同理（目标在空白处结束）。
+
+        这两个是真实文件名里最常见的字符（重导咸鱼梦想家时，29 份文档里就有一份带 `(2)`、一份带空格）。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'src')
+            os.makedirs(src)
+            cases = [
+                ('202421047946_研究生学位（毕业）论文开题报告(2).pdf', 'a.pdf'),
+                ('Chang 等 - 2022 - Environmental Justice Assessment.pdf', 'b.pdf'),
+            ]
+            items = []
+            for i, (title, body) in enumerate(cases, start=1):
+                path = os.path.join(src, body)
+                Path(path).write_bytes(b'%PDF-1.4 fake')
+                items.append(document_message(i, i, {'title': title, 'ext': 'pdf', 'bytes': 13,
+                                                     'md5': chr(96 + i) * 32}, path=path))
+            md_path, _t, _n, _assets = eh.write_markdown(tmp, '会话', items)
+            md = Path(md_path).read_text(encoding='utf-8')
+            targets = re.findall(r'\]\(([^)]*)\)', md)
+            self.assertEqual(len(targets), 2)
+            for target in targets:
+                self.assertNotIn(' ', target, '目标里留空格会让渲染器在空白处截断')
+                self.assertNotIn('(', target, '目标里留半角括号会让渲染器在 `)` 处截断')
+                self.assertTrue((Path(tmp) / urllib.parse.unquote(target)).is_file(), target)
+            self.assertIn('%282%29.pdf', md)
+            self.assertIn('%20', md)
+
+    def test_a_long_title_keeps_its_extension(self):
+        """80 字符上限**不能把扩展名一起切掉**：真机落过一个没有扩展名的文件，
+        系统与编辑器都不知道该用什么打开它。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'src')
+            os.makedirs(src)
+            title = 'Chang 等 - 2022 - Environmental Justice Assessment of Fine Particles, Ozone, and More ' * 2 + '.pdf'
+            self.assertGreater(len(title), 80)
+            path = os.path.join(src, 'long.pdf')
+            Path(path).write_bytes(b'%PDF-1.4 fake')
+            md_path, _t, _n, assets_name = eh.write_markdown(
+                tmp, '会话', [document_message(1, 1, {'title': title, 'ext': 'pdf', 'bytes': 13,
+                                                     'md5': 'c' * 32}, path=path)])
+            names = [p.name for p in (Path(tmp) / assets_name / 'files').iterdir()]
+            self.assertEqual(len(names), 1)
+            self.assertTrue(names[0].endswith('.pdf'), names[0])
+            self.assertLessEqual(len(names[0]), 80, names[0])
+            self.assertIn('](', Path(md_path).read_text(encoding='utf-8'))
 
     def test_two_documents_with_the_same_name_do_not_overwrite_each_other(self):
         with tempfile.TemporaryDirectory() as tmp:

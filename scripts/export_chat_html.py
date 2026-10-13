@@ -14,6 +14,7 @@ import re
 import base64
 import urllib.request
 import urllib.error
+import urllib.parse
 import concurrent.futures
 import shutil
 import struct
@@ -2453,8 +2454,17 @@ def _asset_file_name(title, used_names, source, md5):
 
     不改名是刻意的 —— 那是用户自己的文件名，读者要靠它认东西；微信自己也会加 `(1)`。但两个不同来源
     的文件可能同名，那种情况必须区分，否则后来者会覆盖先到者、清单指错文件。
+
+    **截断要在扩展名之前**：真机实测过一个超长标题，`sanitize_filename` 的 80 字符上限把 `.pdf` 一起
+    切掉了，落盘成没有扩展名的文件 —— 系统与编辑器都不知道该用什么打开它。
     """
-    safe = sanitize_filename(title).strip().strip('.') or 'file'
+    stem, ext = os.path.splitext(str(title or ''))
+    # 扩展名单独保留（也过一遍非法字符清洗，但不参与"给主干剩下的额度"）
+    ext = sanitize_filename(ext).strip().strip('.')
+    stem = sanitize_filename(stem).strip().strip('.')
+    if len(ext) > 16:
+        stem, ext = sanitize_filename(str(title or '')), ''
+    safe = ((stem[:max(1, 80 - len(ext) - 1)] or 'file') + ('.' + ext if ext else ''))
     if used_names.get(safe) in (None, source):
         return safe
     stem, ext = os.path.splitext(safe)
@@ -2550,6 +2560,24 @@ def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
     return os.path.basename(os.path.normpath(assets)), manifest, written + file_written
 
 
+def _markdown_link_target(rel):
+    """把相对路径转成 markdown 链接目标：只编码会**截断链接**的那些字符。
+
+    真机实测（2026-10-13，重导咸鱼梦想家时核对产物才发现）：文件名叫
+    `…研究生学位（毕业）论文开题报告(2).pdf`，写出来是 `[名字](…报告(2).pdf)` —— 任何 markdown 渲染器
+    都在第一个半角 `)` 处结束目标，链接指向 `…报告(2`，点开是空的。带空格的文件名同理（目标在空白处结束）。
+    所以按段编码这几个字符（括号、空白、`<`、`>`、`[`、`]`、`#`、`?`、`%`、引号、反斜杠），
+    **中文保持原样**：本地预览器都按 UTF-8 解路径，编码成 `%E5%…` 反而让人看不懂。
+    """
+    out = []
+    for ch in str(rel or '').replace('\\', '/'):
+        if ch.isspace() or ch in '()[]<>#"\'%?\\':
+            out.append('%%%02X' % ord(ch))
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
 def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
     """markdown 正文 + 媒体落盘（落盘那半在 `write_assets`，两者共用同一份清单）。"""
     assets_name, manifest, written = write_assets(out_dir, file_prefix, formatted, assets_dir)
@@ -2573,9 +2601,11 @@ def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
             if rel and kind == 'file':
                 # 文档不是图片：`![](…)` 会被当成坏图，要写成链接，链接文字用原始文件名。
                 keep = '' if (not body or body.startswith('[文件]')) else body + chr(10) + chr(10)
-                body = keep + '[%s](%s)' % (label or os.path.basename(rel), rel)
+                text = (label or os.path.basename(rel)).replace('[', '&#91;').replace(']', '&#93;')
+                body = keep + '[%s](%s)' % (text, _markdown_link_target(rel))
             elif rel:
-                body = ('' if (not body or body == '[图片]') else body + chr(10) + chr(10)) + '![图片](%s)' % rel
+                body = ('' if (not body or body == '[图片]') else body + chr(10) + chr(10)) \
+                    + '![图片](%s)' % _markdown_link_target(rel)
         lines.extend(['**%s** %s' % (who, stamp), '', body.strip() or '（空）', ''])
 
     md_path = os.path.join(out_dir, file_prefix + '.md')
