@@ -258,6 +258,10 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
   `bd82316` 只改了 `package.json` 版本号与 CHANGELOG 段名）。GitHub Release `v1.11.0` 指向 `bd82316`，
   正文由 `## 1.11.0` 段机械切出（9,689 字符、7 条 bullet、未触及 125,000 上限 ⇒ 未截断），
   建完在 List 上已是 **Latest**（把 1.10.0 挤下去是预期行为）。
+  ⚠️ **这次发布本身有一次 CI 失败，记在这里免得事后只看到"一切正常"**：`chore: 1.11.0` 那次提交的
+  `release-consistency` 报「版本号与锁文件必须一致」—— 我改了 `package.json` 忘了 `package-lock.json`，
+  连红三次（含紧随其后的文档提交）。**发布物不受影响**（白名单里没有锁文件、shasum 与装出来的那份都验过），
+  但 master 的 CI 是红的；修在 `f9e55c8`，之后两次推送都是 success。清单第 1 步已补上这条检查。
 
 
 ## 发布后
