@@ -94,6 +94,11 @@ COVER_STATE = {
     'thumb_fetched': 0, 'thumb_cached': 0, 'thumb_skipped': 0,
 }
 
+# 落盘时用的扩展名：按**字节**判（`detect_mime_from_bytes`），不按来源猜 —— 实测同一会话 556 张图里
+# 87 个是 GIF、27 个是 PNG，一律叫 .jpg 会让编辑器按扩展名解码、把动画表情显示成坏图。
+_IMAGE_EXT_BY_MIME = {'image/jpeg': '.jpg', 'image/png': '.png',
+                      'image/gif': '.gif', 'image/webp': '.webp'}
+
 # Off by default: full-resolution originals are 5-24MB / 3000-5700px each, and
 # downscaling ~500 of them costs minutes (PIL decode dominates). The cache's
 # own thumbnails need no processing at all and are what an export normally
@@ -2319,11 +2324,15 @@ def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
         body = plain_fragment(item.get('display') or '', limit=100000) or ''
         blob = item.get('image_b64')
         if blob:
-            name = 'img_%s_%s.jpg' % (item.get('local_id'), hashlib.md5(blob[:64].encode()).hexdigest()[:8])
+            data = base64.b64decode(blob)
+            mime = detect_mime_from_bytes(data[:32]) or 'image/jpeg'
+            name = 'img_%s_%s%s' % (item.get('local_id'),
+                                   hashlib.md5(blob[:64].encode()).hexdigest()[:8],
+                                   _IMAGE_EXT_BY_MIME.get(mime, '.jpg'))
             path = os.path.join(assets, name)
             if not os.path.exists(path):
                 with open(path, 'wb') as fh:
-                    fh.write(base64.b64decode(blob))
+                    fh.write(data)
                 written += 1
             rel = os.path.relpath(path, out_dir).replace('\\', '/')
             # 键带时间戳：**同一个 local_id 会在分片之间重复**（每条会话的表可能存在于多个分片，

@@ -19,6 +19,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Animated GIFs survive every export path - and now the files say so.** Asked whether GIFs come through, the
+  answer was measured rather than assumed: of the 556 images in one real conversation, **87 are GIFs** (animated:
+  `NETSCAPE2.0` plus frame blocks) and 27 are PNGs, and both the markdown assets and the HTML embeds carried them
+  intact (`image/gif` ×87 in the page, 84 of them animated) - `wechat_image.shrink` has always passed *animated*
+  GIFs through untouched, precisely because a JPEG re-encode would show a still of what the sender saw moving.
+  What was wrong was the **file names**: the new markdown path hard-coded `.jpg`, so 87 GIFs and 27 PNGs landed as
+  `img_….jpg` - content right, extension lying, which is what an editor decodes by. The extension is now sniffed
+  from the bytes (`detect_mime_from_bytes`, which the script already had), so it is
+  `.gif`/`.png`/`.jpg`/`.webp` as appropriate: measured after the fix, the four formats agree exactly - 87 `.gif`,
+  27 `.png`, 442 `.jpg` references each (433 distinct jpg files, nine of them shared by two messages).
+
 - **`export … md` exists, and the other formats now carry the same images.** A user reported that only HTML
   exported images; that was true, and the root cause was not a missing switch. Images are matched through the
   cache/account indexes, and only the Python exporter did that - so the fix routes markdown through the same

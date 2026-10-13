@@ -67,6 +67,24 @@ class MarkdownExportTests(unittest.TestCase):
                              '只按 local_id 做键会让后一条覆盖前一条（非 md 格式于是引用到别人的图）')
             self.assertEqual(asset_total, 2)
 
+    def test_file_extension_follows_the_bytes_not_a_default(self):
+        """GIF / PNG 不许都落成 .jpg —— 编辑器按扩展名解码，动画表情会显示成坏图。
+
+        2026-10-13 实测：同一会话 556 张图里 87 个是 GIF、27 个是 PNG，而我一开始把文件名硬编码成了 `.jpg`
+        （内容其实是 GIF，含 NETSCAPE2.0 与 13 个帧块）。这里用魔数夹具钉住。
+        """
+        import base64
+        gif = base64.b64encode(b'GIF89a' + b'\x00' * 20).decode()
+        png = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 20).decode()
+        with tempfile.TemporaryDirectory() as tmp:
+            md_path, _t, _w, assets_name = eh.write_markdown(
+                tmp, '会话', [msg(1, 1700000000, image=gif), msg(2, 1700000060, image=png)])
+            names = sorted(p.name for p in (Path(tmp) / assets_name).iterdir() if p.suffix != '.json')
+            self.assertEqual([Path(n).suffix for n in names], ['.gif', '.png'],
+                             '扩展名要跟着字节走；默认 .jpg 会让 GIF 显示不出来')
+            md = Path(md_path).read_text(encoding='utf-8')
+            self.assertIn('.gif)', md)
+
     def test_text_messages_keep_their_text_and_placeholders_are_replaced_by_images(self):
         with tempfile.TemporaryDirectory() as tmp:
             md_path, _t, _w, _n = eh.write_markdown(
