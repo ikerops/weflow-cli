@@ -21,6 +21,19 @@ npm 包与 GitHub 分开发布，中间隔多久都不奇怪——`1.5.0` 与主
 已备好但**从未发布**的版本号可以并进下一个：`1.5.1` 准备过却没发，
 它的修复就直接并进了 `1.6.0`。
 
+**改 `package.json` 的版本号时必须同时改 `package-lock.json`**（lockfileVersion 3 里有两个地方：
+顶层的 `version` 与 `packages[""].version`）。**2026-10-13 发 1.11.0 时就是这么红了一次**：包已经发出去、
+tag 也打了，`release-consistency` 才报「版本号与锁文件必须一致」—— 我本地只跑了 build/test/文档命令检查，
+而这三样都不看锁文件。发布物本身没问题（`files` 白名单里没有锁文件），但 master 的 CI 红了。
+
+```powershell
+node -p "require('./package.json').version"     # 两个必须相等
+node -p "require('./package-lock.json').version"
+```
+
+顺手验一下锁文件没跑偏（只写锁、不动 `node_modules`）：
+`npm install --package-lock-only --dry-run` —— 报 `up to date` 即可，那也正是 `npm ci` 会不会炸的判据。
+
 ## 2. 整理 CHANGELOG
 
 - 把 `## Unreleased` 改名为 `## <新版本号>`
