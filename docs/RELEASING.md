@@ -229,6 +229,22 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
   3cf5605，它不在包里那一份 tarball 的对应关系里 —— 写下来是因为 1.8.0 那次正是"事后不知道 tag 对应哪个
   提交"）。GitHub Release `v1.10.0` 同样指向它，正文由 `## 1.10.0` 段机械切出（92,213 字符，未触及
   125,000 上限 ⇒ 未截断），List 上已是 **Latest**。
+- **1.11.0 的出处核过了（2026-10-13，发布当天，四种证据）**：
+  1. 本地 `npm pack` 的 shasum = `21db27cbb151987331c7993c625eb4626c23f58a`，与**两个源**上
+     `weflow-cli@1.11.0` 的 `dist.shasum` **三者相同** ⇒ 发出去的就是我构建的那一份，且镜像同步的是同一份；
+  2. 从 registry（不是本地 tarball）装进一个**空目录**，用**装好的那份**跑 `cli.cjs --version` 得到 `1.11.0`、
+     `--help` 72 行含 `Commands:`；1.9.0 缺过的 `logo.png` 与 `scripts/data/wechat_emoji.json` 都在，
+     开发用探针 `.mjs` 不在包里（有意，见 `test/pack-contents.test.ts`）；
+  3. **本次真正改动的那个脚本逐字节核过**：装好的那份 `scripts/export_chat_html.py` 的 sha256
+     = `73117B7A35347D68FE239D660C9A0531E231BA8CA7A0A31F8DA0C07D5D54C041`，与仓库里那份**相同**
+     ⇒ 用户拿到的是这一版脚本，不是旧的。这是比"文件在不在"更强的一层：**在，而且是我这次写的那份**；
+  4. 两个源都是 1.11.0：官方源与 `registry.npmmirror.com`（`curl -X PUT …/syncs` 受理后，发布后约 1 分钟
+     查 shasum 仍取不到、20 分钟内再查时两源都已生效 —— 这次的窗口比 1.10.0 那次（约 4 分钟）长，
+     但**没有逐点采样**，所以只记"两次查询的区间"，不写一个假的分钟数）。
+  **发布日志 0 条告警**；**tag 打在被发布的那个提交上**：`v1.11.0` → `bd82316`（`821479b` 是功能提交，
+  `bd82316` 只改了 `package.json` 版本号与 CHANGELOG 段名）。GitHub Release `v1.11.0` 指向 `bd82316`，
+  正文由 `## 1.11.0` 段机械切出（9,689 字符、7 条 bullet、未触及 125,000 上限 ⇒ 未截断），
+  建完在 List 上已是 **Latest**（把 1.10.0 挤下去是预期行为）。
 
 
 ## 发布后
