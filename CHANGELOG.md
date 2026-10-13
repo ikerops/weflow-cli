@@ -17,7 +17,7 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**
   Re-exporting one 1,914-message conversation (29 documents on disk) and asking whether what got written can
