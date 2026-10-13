@@ -262,6 +262,20 @@ npm view weflow-cli version --registry=https://registry.npmjs.org  # 用官方�
   `release-consistency` 报「版本号与锁文件必须一致」—— 我改了 `package.json` 忘了 `package-lock.json`，
   连红三次（含紧随其后的文档提交）。**发布物不受影响**（白名单里没有锁文件、shasum 与装出来的那份都验过），
   但 master 的 CI 是红的；修在 `f9e55c8`，之后两次推送都是 success。清单第 1 步已补上这条检查。
+- **1.11.1 的出处核过了（2026-10-13，发布当天，四种证据）**：这是 1.11.0 发布后**当天**的补丁版
+  （文档导出五处修复，详见 CHANGELOG）。
+  1. 本地 `npm pack` 的 shasum = `5527b538e3ed5ec49520e14e563a8bff31ee4ea4`，与**两个源**上
+     `weflow-cli@1.11.1` 的 `dist.shasum` **三者相同**；
+  2. 从 registry 装进空目录，用**装好的那份**跑 `cli.cjs --version` 得到 `1.11.1`，且它的
+     `scripts/export_chat_html.py` 与仓库里那份 **sha256 逐字节相同**（并确认含本次新增的
+     `_load_existing_manifest` / `_clean_asset_component`）——"在，而且是我这次写的那份"；
+  3. 两个源都是 1.11.1：官方源**约 2 分钟**就有了，`registry.npmmirror.com` 约 **5 分钟**（`curl -X PUT …/syncs`
+     受理后）；两个源上该版本的 shasum 也一致；
+  4. **版本号三处一起改**（`package.json` + `package-lock.json` 的顶层 `version` 与 `packages[""].version`），
+     所以这一次 `release-consistency` 没有再红 —— 1.11.0 那次就是漏了锁文件。
+  **tag 打在被发布的那个提交上**：`v1.11.1` → `888d8fc`（只改了 `package.json`/`package-lock.json`/CHANGELOG
+  段名，功能提交是 `2b03b4f`）。GitHub Release `v1.11.1` 指向它，正文由 `## 1.11.1` 段机械切出
+  （3,154 字符、1 条 bullet、未触及上限），建完是 **Latest**。
 
 
 ## 发布后
