@@ -17,7 +17,7 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.11.0
 
 - **Documents now travel with the export — all five formats, bodies included.** The same user report that asked
   about images asked about *documents*; images got fixed, documents had not, and no format exported them (the page
