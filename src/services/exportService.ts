@@ -17,37 +17,63 @@ export interface ExportResult { success: boolean; path?: string; count?: number;
 const execFileAsync = promisify(execFile)
 
 /**
- * md 导出落盘的媒体清单：`<output>/<talker>_assets/manifest.json`（`local_id` → 相对路径）。
+ * md 导出落盘的媒体清单：`<output>/<talker>_assets/manifest.json`（`local_id:create_time` → 条目）。
  *
- * 这是"其余格式也能带图"的那一半：**md 导出抽取媒体，json/txt/excel 消费同一份清单** —— 匹配逻辑
- * （缓存缩略图、资源 md5、原图那档）只存在于 Python 那条路上，在这里重写一遍必然与它漂移。
- * 读不到就返回空表：那说明还没跑过 md 导出，行为与从前一致。
+ * 这是"其余格式也能带图/带文件"的那一半：**md 导出抽取媒体，json/txt/excel 消费同一份清单** —— 匹配
+ * 逻辑（缓存缩略图、资源 md5、原图那档、`msg/file` 里的文档本体）只存在于 Python 那条路上，在这里重写
+ * 一遍必然与它漂移。读不到就返回空表：那说明还没跑过 md/`--media` 导出，行为与从前一致。
  */
+export interface MediaRecord {
+  /** 相对输出目录的路径；`kind: 'file'` 时指向 `files/` 下的文档。 */
+  path: string
+  kind: 'image' | 'file'
+  /** 文档的原始文件名（图片没有）。 */
+  name?: string
+}
+
 /**
- * 从清单里取这条消息的媒体相对路径。
+ * 从清单里取这条消息的媒体条目。
  *
  * 键是 `local_id:create_time`：**local_id 会在分片之间重复**（同一会话的表可能存在于多个分片，
  * 各片自己编号），只按 local_id 查会让 json/txt/excel 引用到别的消息的图。两条消息硬要同 id 同秒
  * 才算撞上，那个概率可以忽略；回退查裸 local_id 是为了兼容更早写出的清单。
  */
-export function mediaFor(manifest: Record<string, string>, message: { localId?: unknown; createTime?: unknown }): string | undefined {
+export function mediaFor(manifest: Record<string, MediaRecord>, message: { localId?: unknown; createTime?: unknown }): MediaRecord | undefined {
   const id = String(message.localId)
   return manifest[`${id}:${message.createTime}`] ?? manifest[id]
 }
 
-export function readMediaManifest(outputDir: string, talker: string): Record<string, string> {
+export function readMediaManifest(outputDir: string, talker: string): Record<string, MediaRecord> {
   try {
     const file = join(outputDir, `${talker}_assets`, 'manifest.json')
     if (!existsSync(file)) return {}
     const data = JSON.parse(readFileSync(file, 'utf8'))
     const map = data && data.messages
-    return map && typeof map === 'object' ? map : {}
+    if (!map || typeof map !== 'object') return {}
+    // v1 的值是裸字符串（只有图片），v2 起是带 `kind` 的对象。升级不该让磁盘上已有的清单失效 ——
+    // 用户不会因为升了个版本就重跑一次导出。
+    const normalized: Record<string, MediaRecord> = {}
+    for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
+      if (typeof value === 'string') {
+        normalized[key] = { path: value, kind: 'image' }
+      } else if (value && typeof value === 'object' && typeof (value as MediaRecord).path === 'string') {
+        const record = value as MediaRecord
+        normalized[key] = { ...record, kind: record.kind === 'file' ? 'file' : 'image' }
+      }
+    }
+    return normalized
   } catch {
     return {}
   }
 }
 function getPackageRoot(): string {
   return resolvePackageRoot(import.meta.url)
+}
+
+/** txt/excel 共用的文字标签：文档要带上原名，光一个相对路径看不出那是什么东西。 */
+function mediaLabel(record: MediaRecord | undefined): string {
+  if (!record) return ''
+  return record.kind === 'file' ? `${record.name || record.path} (${record.path})` : record.path
 }
 
 export class ExportService {
@@ -65,7 +91,12 @@ export class ExportService {
       const withMedia = Object.keys(mediaMap).length
         ? messages.map(m => {
           const media = mediaFor(mediaMap, m)
-          return media ? { ...m, media } : m
+          // `media` 保持"相对路径字符串"这个老形状（已有消费方按字符串读）；`mediaKind`/`mediaName`
+          // 是新增的 —— 不带这两项，读 JSON 的人只能靠扩展名猜这是图片还是文档，而导出明明知道。
+          if (!media) return m
+          return media.kind === 'file'
+            ? { ...m, media: media.path, mediaKind: media.kind, mediaName: media.name }
+            : { ...m, media: media.path, mediaKind: media.kind }
         })
         : messages
       const payload = contract === 'weflow-v1'
@@ -93,9 +124,11 @@ export class ExportService {
       const lines = messages.map(m => {
         const time = new Date(m.createTime * 1000).toLocaleString('zh-CN')
         const sender = m.isSend ? '我' : (m.senderUsername || talker)
-        // 有清单就把 `[图片]` 换成 `[图片: <相对路径>]`，没有就保持原样
+        // 有清单就把 `[图片]` / `[文件] 名字` 换成能直接打开的引用，没有就保持原样
         const media = mediaFor(mediaMap, m)
-        const content = media ? `[图片: ${media}]` : (m.parsedContent || m.rawContent || '')
+        const content = media
+          ? (media.kind === 'file' ? `[文件: ${mediaLabel(media)}]` : `[图片: ${media.path}]`)
+          : (m.parsedContent || m.rawContent || '')
         return `[${time}] ${sender}: ${content}`
       })
 
@@ -257,11 +290,15 @@ export class ExportService {
   }
 
   /**
-   * 只抽媒体（图片落盘 + 清单），不产出正文 —— `export … json|txt|excel --media` 先跑这一步。
+   * 只抽媒体（图片与文档落盘 + 清单），不产出正文 —— `export … json|txt|excel --media` 先跑这一步。
    * 与 markdown 导出共用同一条 Python 通路与同一个资产目录，所以清单只有一份。
+   *
+   * `limit`/`date` 必须跟着调用方走：抽取原本固定按"整个会话"跑，而消费它的 json/txt/excel 是按
+   * `--limit` 切片的 —— `--limit 200` 于是把整段历史的媒体都抽出来（文档还要拷成文件），
+   * 实测 67 份里只有 33 份落在导出的 200 条里。
    */
-  async extractMedia(talker: string, outputDir: string, quiet = false, options: { fullImages?: boolean } = {}): Promise<ExportResult> {
-    return this.exportHtml(talker, outputDir, 0, '', undefined, undefined, quiet,
+  async extractMedia(talker: string, outputDir: string, quiet = false, options: { fullImages?: boolean } = {}, limit = 0, date = ''): Promise<ExportResult> {
+    return this.exportHtml(talker, outputDir, limit, date, undefined, undefined, quiet,
       { ...options, format: 'md', assetsOnly: true })
   }
 
@@ -317,7 +354,7 @@ export class ExportService {
           type: this.getMessageTypeName(m.localType),
           content: m.parsedContent || m.rawContent || '',
           msgId: m.localId,
-          media: mediaFor(mediaMap, m) || ''
+          media: mediaLabel(mediaFor(mediaMap, m))
         })
       }
 

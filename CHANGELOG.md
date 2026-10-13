@@ -19,6 +19,31 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Documents now travel with the export — all five formats, bodies included.** The same user report that asked
+  about images asked about *documents*; images got fixed, documents had not, and no format exported them (the page
+  showed `[文件] <name>` and stopped there). A file message carries only a name and an md5 — the body lives under
+  the account directory's `msg/file/` — so the export gained a **stat-only index** of that tree and matches on
+  `(normalized name, byte size)`, falling back to md5 only when several candidates share a name. Measured here:
+  1,855 file messages, 1,489 unique matches, 154 resolved by md5, **212 with no local copy** (never downloaded or
+  already cleaned) — **88.6%**, and the remaining 11.4% is *counted*, not guessed. Bodies are copied into
+  `<output>/<talker>_assets/files/` under their **original name and extension**, and markdown links to them by the
+  original file name (an image embed would render as a broken picture); `json`/`txt`/`excel` carry the same through
+  the manifest (`media` + `mediaKind`/`mediaName`, `[文件: name]`, the 「媒体」 column). HTML deliberately does not
+  embed them — base64-inlining a 3 MB PDF into a page nobody can open is not "supporting documents". Verified end
+  to end on a 600-message slice: 61 documents / 27 MB on disk, every extension matching its magic bytes, 63 links
+  in the markdown with no broken target, manifest and JSON agreeing on the same 58 entries (and 0 without
+  `--media`). The manifest is now `weflow-media-manifest/v2` (values are objects carrying `kind`); v1 files still
+  read, because nobody should have to re-export after an upgrade.
+
+  Two traps, both found by measuring instead of reasoning. First, a quoted reply keeps the quoted text in
+  `<refermsg>` — which sits **inside** `<appmsg>` — so it carries a nested `type=6` block with its own
+  `<title>`/`<appattach>`. The first pass searched the XML for the first matching tag and reported 7,083 "files",
+  nearly all of them quoted text; the parser now reads `<appmsg>`'s **direct children** only. Second, because a
+  re-run copies nothing new, a count of "files we wrote" read `0` on the second export into the same directory
+  while 67 documents sat on disk — the CLI said "0 document(s)". `exported` (is it there) and `written` (did we
+  copy it just now) are separate counts now. `--media` also stopped extracting the **whole** conversation while
+  the format it feeds was sliced by `--limit` (67 documents extracted, 33 of them used); it takes the same window.
+
 - **`export … json|txt|excel --media` puts the images in one command.** The markdown export is what extracts
   media, so the other formats needed it run first - two steps, and a user who did not know that would see
   `[图片]` and conclude the feature was missing. `--media` runs the same extraction (same Python path, same

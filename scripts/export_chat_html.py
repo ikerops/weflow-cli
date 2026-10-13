@@ -15,7 +15,9 @@ import base64
 import urllib.request
 import urllib.error
 import concurrent.futures
+import shutil
 import struct
+import xml.etree.ElementTree as ET
 import json
 from pathlib import Path
 
@@ -98,6 +100,20 @@ COVER_STATE = {
 # 87 个是 GIF、27 个是 PNG，一律叫 .jpg 会让编辑器按扩展名解码、把动画表情显示成坏图。
 _IMAGE_EXT_BY_MIME = {'image/jpeg': '.jpg', 'image/png': '.png',
                       'image/gif': '.gif', 'image/webp': '.webp'}
+
+# 文档本体（appmsg `type=6`）从账号目录的 `msg/file/` 拷进 assets。原件是用户自己的文件：不重编码、
+# 扩展名保持原样（编辑器/系统按扩展名决定用什么打开）。上限只防"一个几百 MB 的压缩包把导出变成磁盘炸弹"，
+# 超限的**不静默丢**：计入 `FILE_ASSET_STATE['unavailable']` 并写进清单顶部计数。
+MAX_ASSET_FILE_BYTES = 64 * 1024 * 1024
+_FILE_ASSET_SUBDIR = 'files'
+
+# 文档那半的计数（图片那半的计数在写盘时现算）。放在模块级是为了不改 `write_assets` 的返回形状 ——
+# 它已经有两个调用方（markdown 导出与 `--media`），与 COVER_STATE/VOICE_STATE 是同一套写法。
+#
+# `exported` 与 `written` 是两件事：`written` 只数**这次新拷**的，`exported` 数"这条消息的文档确实在
+# assets 里"。分开是因为第二次跑同一个目录时新拷贝是 0 —— 只报 `written` 会打印成"0 document(s)"，
+# 而实际上 67 份都在，那是给自己制造假象（2026-10-13 真的这么打印过一次）。
+FILE_ASSET_STATE = {'exported': 0, 'written': 0, 'unavailable': 0}
 
 # Off by default: full-resolution originals are 5-24MB / 3000-5700px each, and
 # downscaling ~500 of them costs minutes (PIL decode dominates). The cache's
@@ -491,6 +507,71 @@ def scan_account_media(account_dir, own_wxid='', talker=''):
                 except (OSError, ValueError):
                     continue
     return image_map
+
+
+def normalize_asset_name(name):
+    """把消息里的 `title` 与磁盘文件名归一成同一个键。
+
+    微信写盘时会给自己加一份副本后缀：消息里是 `晚餐聚餐安排（学术研讨会后）.docx`，磁盘上是
+    `晚餐聚餐安排（学术研讨会后）(1).docx`（实测）。半角全角都出现过，所以两种括号都剥。
+    """
+    stem, ext = os.path.splitext(str(name or ''))
+    return (re.sub(r'[\s]*[（(]\d+[)）]$', '', stem).strip().lower() + ext.lower())
+
+
+def scan_account_file_index(account_dir):
+    """`msg/file/**` 的**只 stat 索引**：`{(归一化名, 字节数): [路径]}`。
+
+    为什么不照图片那套按 talker 缩范围：`msg/file` 按月分目录（`msg/file/2024-04/…`），目录里没有
+    talker 的痕迹，一条会话的文件散在所有月份里。好在它只 `stat` 不读内容 —— 真机 1,677 个文件
+    不到一秒。键带上字节数是因为同名而内容不同的情形确实存在；真正的消歧靠 md5，但那要读盘，
+    所以只留给**多候选**那一档（实测 1,855 条文件消息里 154 条落到这档，全部认下）。
+    """
+    index = {}
+    root = os.path.join(account_dir, 'msg', 'file')
+    if not os.path.isdir(root):
+        return index
+    for current_root, _, files in os.walk(root):
+        for fname in files:
+            path = os.path.join(current_root, fname)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            index.setdefault((normalize_asset_name(fname), size), []).append(path)
+    return index
+
+
+def resolve_account_file(info, file_index):
+    """把一条文件消息对到本地那份文件上；对不上返回 None（不猜，D-014）。
+
+    先按 `(归一化名, 字节数)` 查：真机 1,855 条里 1,489 条唯一命中；多候选才读盘比 md5。整体命中
+    88.6%，剩下的 11.4% 是本地确实没有那份文件（未下载 / 已清理），与图片那半同一种情况。
+    """
+    if not info or not file_index:
+        return None
+    name = normalize_asset_name(info.get('title', ''))
+    size = info.get('bytes') or 0
+    candidates = file_index.get((name, size)) if size else None
+    if candidates is None:
+        # `totallen` 缺失（少数消息没有）时退化成按名字查一遍：只遍历键，不读盘。
+        candidates = [path for (key_name, _size), paths in file_index.items()
+                      if key_name == name for path in paths]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    want = (info.get('md5') or '').lower()
+    if want:
+        for path in candidates:
+            try:
+                with open(path, 'rb') as fh:
+                    if hashlib.md5(fh.read()).hexdigest() == want:
+                        return path
+            except OSError:
+                continue
+        return None
+    return candidates[0]
 
 
 def clean_account_wxid(value):
@@ -1615,7 +1696,49 @@ def sender_matches_account(sender_user_name, own_wxid):
     return False
 
 
-def format_message(row, talker, wx_dir, image_map=None, sender_map=None, display_name='', resource_map=None, own_wxid=''):
+def parse_file_appmsg(content):
+    """顶层 appmsg `type=6`（文件）的元数据，或 None。
+
+    取的是 `<appmsg>` 的**直接子元素**，不是"整段里第一个同名标签"。原因：引用消息（type 57）把被引用
+    的原文整个塞进 `<refermsg>`，而 `<refermsg>` 就在 `<appmsg>` **内部** —— 那份原文里的 `<type>6</type>`
+    /`<title>`/`<appattach>` 与这条消息自己的字段处在同一段文本里，"切到 appmsg 块"和"取第一个匹配"
+    都分不开，只有按层级取才分得开。2026-10-13 首次测量用正则满文档搜，7,083 条"像文件"里绝大多数
+    就是这种引用原文。
+    """
+    if not content:
+        return None
+    match = re.search(r'<appmsg[\s>].*?</appmsg>', str(content), re.S)
+    if not match:
+        return None
+    try:
+        element = ET.fromstring('<root>' + match.group(0) + '</root>').find('appmsg')
+    except ET.ParseError:
+        # 真机 7,878 行里有 2 行解析不了（转义残缺）。返回 None = 当"不是文件消息"：少带出一个文件，
+        # 好过把某份引用原文的名字当成本条文件的名字。
+        return None
+    if element is None:
+        return None
+    fields = {child.tag: (child.text or '').strip() for child in element}
+    if fields.get('type') != '6':
+        return None
+    title = fields.get('title', '')
+    if not title:
+        return None
+    attachment = element.find('appattach')
+    attach = {child.tag: (child.text or '').strip() for child in attachment} if attachment is not None else {}
+    try:
+        total = int(fields.get('totallen') or attach.get('totallen') or '0')
+    except ValueError:
+        total = 0
+    return {
+        'title': title,
+        'ext': (fields.get('fileext') or attach.get('fileext') or '').lower(),
+        'md5': (fields.get('md5') or attach.get('md5') or '').lower(),
+        'bytes': total,
+    }
+
+
+def format_message(row, talker, wx_dir, image_map=None, sender_map=None, display_name='', resource_map=None, own_wxid='', file_index=None):
     """Format a single message for HTML display.
 
     Args:
@@ -1625,6 +1748,8 @@ def format_message(row, talker, wx_dir, image_map=None, sender_map=None, display
         image_map: {local_id: (base64_data, mime_type)} from NT cache scan
         sender_map: {sender_id: user_name} from Name2Id table
         display_name: human-readable name for the target talker
+        file_index: {(归一化名, 字节数): [路径]} from scan_account_file_index, for
+            resolving a document attachment to the copy on disk
     """
     is_group = '@chatroom' in str(talker or '')
     local_id = row[0] or 0
@@ -1734,6 +1859,12 @@ def format_message(row, talker, wx_dir, image_map=None, sender_map=None, display
 
     if '\x00' in content or sum(ord(char) < 32 and char not in '\n\r\t' for char in content) > 2:
         content = ''
+
+    # 文档本体：消息里只有名字与 md5，文件本身在账号目录的 `msg/file/` 下。这里只**解析并定位**，
+    # 不读也不拷 —— 拷贝发生在写 assets 那一步（HTML 那条路根本不落盘：它把图片内嵌成 base64，
+    # 一个几 MB 的 PDF 内嵌进网页既没人打得开、也把文件撑大）。
+    file_info = parse_file_appmsg(content) if local_type == 49 else None
+    file_hit = resolve_account_file(file_info, file_index)
 
     # Determine display content
     display = ''
@@ -1925,19 +2056,24 @@ def format_message(row, talker, wx_dir, image_map=None, sender_map=None, display
         'local_type': local_type,
         'display': display,
         'image_b64': image_b64,
+        # 文档本体的落点（`path` 为 None = 本地没有那份文件）。写 assets 时才拷。
+        'file': ({'title': file_info['title'], 'ext': file_info['ext'],
+                  'bytes': file_info['bytes'], 'md5': file_info['md5'],
+                  'path': file_hit} if file_info else None),
         # Built here rather than accumulated in module state: format_message
         # runs twice (the prefetch dry sweep and the real pass) and the dry
         # pass is discarded, so a counter would double-count.
         'media': build_media_record(
             local_type, image_b64, image_map, local_id, create_time, content,
-            resource_md5s, metadata_content, bool(server_id)),
+            resource_md5s, metadata_content, bool(server_id),
+            file_info, file_hit),
     }
 
 
 MEDIA_KIND_BY_TYPE = {
     3: 'image', 34: 'voice', 43: 'video-thumb', 47: 'emoji', 49: 'link-cover',
 }
-MEDIA_KINDS = {'image', 'emoji', 'voice', 'video-thumb', 'link-cover'}
+MEDIA_KINDS = {'image', 'emoji', 'voice', 'video-thumb', 'link-cover', 'file'}
 
 
 def build_media_report(items, scope, talker, per_page):
@@ -1985,7 +2121,8 @@ def build_media_report(items, scope, talker, per_page):
 
 
 def build_media_record(local_type, image_b64, image_map, local_id, create_time,
-                       content, resource_md5s, metadata_content, has_server_id):
+                       content, resource_md5s, metadata_content, has_server_id,
+                       file_info=None, file_hit=None):
     """What happened to this message's media, or None for a non-media message.
 
     Derived from the same `resolve_media` the page used, so the report cannot
@@ -1999,6 +2136,19 @@ def build_media_record(local_type, image_b64, image_map, local_id, create_time,
         'mediaKey': None, 'kind': kind, 'status': None,
         'mime': None, 'bytes': None, 'sha256': None, 'reason': None,
     }
+
+    if file_info is not None:
+        # 文档本体（appmsg type 6）走的是另一条路：没有缩略图、也不在图片索引里，能不能导出只看
+        # 本地 `msg/file/` 有没有那份文件。不并入图片那条链，否则报告会把"文件没下载"写成"没有可靠标识"。
+        record['kind'] = 'file'
+        record['bytes'] = file_info.get('bytes') or None
+        if file_hit:
+            record['status'] = 'exported'
+            record['mediaKey'] = 'file'
+        else:
+            record['status'] = 'missing'
+            record['reason'] = 'file-not-in-local-storage'
+        return record
 
     if image_b64:
         hit = resolve_media(image_map, local_id, create_time, metadata_content,
@@ -2298,12 +2448,28 @@ p {{ margin:8px 0; font-size:14px; }}
 </html>'''
 
 
+def _asset_file_name(title, used_names, source, md5):
+    """落盘的文档文件名：保持原样（只清洗非法字符），重名才加 md5 前 8 位。
+
+    不改名是刻意的 —— 那是用户自己的文件名，读者要靠它认东西；微信自己也会加 `(1)`。但两个不同来源
+    的文件可能同名，那种情况必须区分，否则后来者会覆盖先到者、清单指错文件。
+    """
+    safe = sanitize_filename(title).strip().strip('.') or 'file'
+    if used_names.get(safe) in (None, source):
+        return safe
+    stem, ext = os.path.splitext(safe)
+    return '%s_%s%s' % (stem, (md5 or 'copy')[:8], ext)
+
+
 def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
-    """把图片**落盘**并把 `manifest.json` 写好；返回 `(assets 目录名, manifest, 新写文件数)`。
+    """把媒体**落盘**并把 `manifest.json` 写好；返回 `(assets 目录名, manifest, 新写文件数)`。
 
     HTML 走的是"内嵌 base64 ⇒ 单文件可分享"，而 markdown 与其它格式的用法是喂给编辑器/别的工具 ——
     那里 `![](data:image/…)` 多数不被认，图片必须是**文件 + 相对路径**。所以这里写文件，并留一份清单
-    （键 `local_id:create_time` → 相对路径）：**抽取只做一遍**，json/txt/excel 只是消费它。
+    （键 `local_id:create_time` → `{path, kind, …}`）：**抽取只做一遍**，json/txt/excel 只是消费它。
+
+    图片与文档本体都进同一个清单：图片来自内存里的 base64，文档是**从 `msg/file/` 拷过来**的（路径在
+    `format_message` 阶段就定好了）。清单 v2 起值是对象（带 `kind`），读取端要兼容 v1 的裸字符串。
     """
     import base64
     import hashlib
@@ -2331,17 +2497,61 @@ def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
             written += 1
         # 键带时间戳：**同一个 local_id 会在分片之间重复**（每条会话的表可能存在于多个分片，
         # id 各片自己编号）—— 只按 local_id 做键，json/txt/excel 会拿别人的图。
-        manifest['%s:%s' % (item.get('local_id'), item.get('create_time'))] = \
-            os.path.relpath(path, out_dir).replace('\\', '/')
+        manifest['%s:%s' % (item.get('local_id'), item.get('create_time'))] = {
+            'path': os.path.relpath(path, out_dir).replace('\\', '/'),
+            'kind': 'image',
+        }
 
+    file_exported = 0
+    file_written = 0
+    file_unavailable = 0
+    files_dir = os.path.join(assets, _FILE_ASSET_SUBDIR)
+    used_names = {}
+    for item in formatted:
+        info = item.get('file')
+        if not info:
+            continue
+        source = info.get('path')
+        size = 0
+        if source:
+            try:
+                size = os.path.getsize(source)
+            except OSError:
+                source = None
+        # 超限与"本地没有"归到同一档计数（都是"这条消息的文档没能带出来"），但不静默：计数写进清单顶部。
+        if not source or size > MAX_ASSET_FILE_BYTES:
+            file_unavailable += 1
+            continue
+        name = _asset_file_name(info.get('title') or os.path.basename(source), used_names, source,
+                                info.get('md5'))
+        target = os.path.join(files_dir, name)
+        if used_names.get(name) != source:
+            os.makedirs(files_dir, exist_ok=True)
+            if not os.path.exists(target):
+                with open(target, 'wb') as dst, open(source, 'rb') as src:
+                    shutil.copyfileobj(src, dst)
+                file_written += 1
+        used_names[name] = source
+        file_exported += 1
+        manifest['%s:%s' % (item.get('local_id'), item.get('create_time'))] = {
+            'path': os.path.relpath(target, out_dir).replace('\\', '/'),
+            'kind': 'file',
+            'name': info.get('title') or name,
+            'bytes': size,
+        }
+
+    FILE_ASSET_STATE['exported'] = file_exported
+    FILE_ASSET_STATE['written'] = file_written
+    FILE_ASSET_STATE['unavailable'] = file_unavailable
     with open(os.path.join(assets, 'manifest.json'), 'w', encoding='utf-8') as fh:
-        json.dump({'schema': 'weflow-media-manifest/v1', 'messages': manifest},
+        json.dump({'schema': 'weflow-media-manifest/v2', 'messages': manifest,
+                   'documents': {'exported': file_exported, 'unavailable': file_unavailable}},
                   fh, ensure_ascii=False, indent=2)
-    return os.path.basename(os.path.normpath(assets)), manifest, written
+    return os.path.basename(os.path.normpath(assets)), manifest, written + file_written
 
 
 def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
-    """markdown 正文 + 图片落盘（图片那半在 `write_assets`，两者共用同一份清单）。"""
+    """markdown 正文 + 媒体落盘（落盘那半在 `write_assets`，两者共用同一份清单）。"""
     assets_name, manifest, written = write_assets(out_dir, file_prefix, formatted, assets_dir)
 
     lines = ['# %s' % file_prefix, '']
@@ -2351,9 +2561,21 @@ def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
         # 所以这里也照它的写法，不带 tz —— 导出页里显示的时间与本文件其它时间戳保持一致。
         stamp = datetime.datetime.fromtimestamp(item.get('create_time') or 0).strftime('%Y-%m-%d %H:%M')
         body = plain_fragment(item.get('display') or '', limit=100000) or ''
-        rel = manifest.get('%s:%s' % (item.get('local_id'), item.get('create_time')))
-        if rel:
-            body = ('' if (not body or body == '[图片]') else body + chr(10) + chr(10)) + '![图片](%s)' % rel
+        record = manifest.get('%s:%s' % (item.get('local_id'), item.get('create_time')))
+        if record:
+            # v1 的值是裸字符串；v2 起是对象。两种都要认（磁盘上可能还留着上一版的清单）。
+            if isinstance(record, dict):
+                rel = record.get('path') or ''
+                kind = record.get('kind') or 'image'
+                label = record.get('name') or ''
+            else:
+                rel, kind, label = record, 'image', ''
+            if rel and kind == 'file':
+                # 文档不是图片：`![](…)` 会被当成坏图，要写成链接，链接文字用原始文件名。
+                keep = '' if (not body or body.startswith('[文件]')) else body + chr(10) + chr(10)
+                body = keep + '[%s](%s)' % (label or os.path.basename(rel), rel)
+            elif rel:
+                body = ('' if (not body or body == '[图片]') else body + chr(10) + chr(10)) + '![图片](%s)' % rel
         lines.extend(['**%s** %s' % (who, stamp), '', body.strip() or '（空）', ''])
 
     md_path = os.path.join(out_dir, file_prefix + '.md')
@@ -2421,6 +2643,14 @@ def main():
                 value = shrink_embedded(value, max_side=720, force=True)
             image_map[key] = value
     print(f"  Found {len(image_map)} media entries for embedding")
+
+    # 文档本体的索引：只 stat，不读内容（1,677 个文件的走一遍不到一秒）。没有它，`appmsg type=6`
+    # 的消息就只能渲染成 `[文件] 名字` —— 正是反馈里"其余格式不支持导出文档"的那一半。
+    file_index = {}
+    if args.account_dir:
+        file_index = scan_account_file_index(args.account_dir)
+        if file_index:
+            print(f"  Account file index: {len(file_index)} key(s)")
     _phase("media scan")
 
     # Custom stickers: derive the local cache key from the account seed.
@@ -2536,7 +2766,7 @@ def main():
     PREFETCH['sink'] = sink
     try:
         for row in messages:
-            format_message(row, args.talker, wx_dir, image_map, sender_map, display_name, resource_map, args.own_wxid)
+            format_message(row, args.talker, wx_dir, image_map, sender_map, display_name, resource_map, args.own_wxid, file_index)
     finally:
         PREFETCH['sink'] = None
     if sink:
@@ -2557,7 +2787,7 @@ def main():
     for i, row in enumerate(messages):
         if i % progress_step == 0:
             print(f"  Formatting {i}/{len(messages)}...", flush=True)
-        result = format_message(row, args.talker, wx_dir, image_map, sender_map, display_name, resource_map, args.own_wxid)
+        result = format_message(row, args.talker, wx_dir, image_map, sender_map, display_name, resource_map, args.own_wxid, file_index)
         if result.get('image_b64'):
             img_hit_count += 1
             if result.get('local_type') == 49:
@@ -2590,10 +2820,15 @@ def main():
     if args.assets_only:
         # 只抽媒体：其它格式的 `--media` 会先跑这一步，再各自消费清单。
         assets_name, manifest, asset_new = write_assets(args.out, file_prefix, formatted, args.assets_dir)
-        print(f"Assets: {len(manifest)} image file(s) ({asset_new} new) -> {assets_name}")
+        print(f"Assets: {len(manifest)} media item(s), {FILE_ASSET_STATE['exported']} document(s) "
+              f"({FILE_ASSET_STATE['unavailable']} unavailable, {FILE_ASSET_STATE['written']} new) "
+              f"({asset_new} new) -> {assets_name}")
         print(json.dumps({"success": True, "total": len(formatted),
                           "files": [os.path.join(args.out, assets_name)], "format": "assets",
                           "assets": len(manifest), "assetsNew": asset_new,
+                          "documents": FILE_ASSET_STATE['exported'],
+                          "documentsNew": FILE_ASSET_STATE['written'],
+                          "documentsUnavailable": FILE_ASSET_STATE['unavailable'],
                           "assetsDir": assets_name}, ensure_ascii=False))
         conn.close()
         return
@@ -2604,11 +2839,15 @@ def main():
             with open(media_report_path, 'w', encoding='utf-8') as handle:
                 json.dump(build_media_report(media_items, display_name, args.talker, len(formatted)),
                           handle, ensure_ascii=False, indent=2)
-        print(f"Markdown: {len(formatted)} message(s), {asset_total} image file(s) ({asset_new} new)"
-              f" -> {os.path.basename(md_path)}")
+        print(f"Markdown: {len(formatted)} message(s), {asset_total} media item(s), "
+              f"{FILE_ASSET_STATE['exported']} document(s) ({FILE_ASSET_STATE['unavailable']} unavailable, "
+              f"{FILE_ASSET_STATE['written']} new) ({asset_new} new) -> {os.path.basename(md_path)}")
         print(json.dumps({"success": True, "total": len(formatted), "parts": 1,
                           "files": [md_path], "format": "md",
                           "assets": asset_total, "assetsNew": asset_new,
+                          "documents": FILE_ASSET_STATE['exported'],
+                          "documentsNew": FILE_ASSET_STATE['written'],
+                          "documentsUnavailable": FILE_ASSET_STATE['unavailable'],
                           "assetsDir": assets_name},
                          ensure_ascii=False))
         conn.close()

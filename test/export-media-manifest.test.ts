@@ -30,10 +30,18 @@ function withManifest(data: unknown, run: (dir: string, talker: string) => void)
 }
 
 test('清单能读出来；没有清单就是空表（不是报错）', () => {
-  withManifest({ schema: 'weflow-media-manifest/v1', messages: { '2:1700000060': 'wxid_test_assets/a.jpg' } },
-    (dir, talker) => {
-      assert.deepEqual(readMediaManifest(dir, talker), { '2:1700000060': 'wxid_test_assets/a.jpg' })
+  withManifest({
+    schema: 'weflow-media-manifest/v2',
+    messages: {
+      '2:1700000060': { path: 'wxid_test_assets/a.jpg', kind: 'image' },
+      '3:1700000070': { path: 'wxid_test_assets/files/报告.pdf', kind: 'file', name: '报告.pdf', bytes: 12 },
+    },
+  }, (dir, talker) => {
+    assert.deepEqual(readMediaManifest(dir, talker), {
+      '2:1700000060': { path: 'wxid_test_assets/a.jpg', kind: 'image' },
+      '3:1700000070': { path: 'wxid_test_assets/files/报告.pdf', kind: 'file', name: '报告.pdf', bytes: 12 },
     })
+  })
   const empty = mkdtempSync(join(tmpdir(), 'weflow-media-'))
   try {
     assert.deepEqual(readMediaManifest(empty, 'wxid_test'), {}, '没跑过 md 导出时行为要与从前一致')
@@ -42,11 +50,24 @@ test('清单能读出来；没有清单就是空表（不是报错）', () => {
   }
 })
 
+test('v1 清单（值是裸字符串）仍然读得出来，当成图片', () => {
+  // 升级不该让磁盘上已有的清单失效：用户不会因为换了个版本就重跑一次导出。
+  withManifest({ schema: 'weflow-media-manifest/v1', messages: { '2:1700000060': 'wxid_test_assets/a.jpg' } },
+    (dir, talker) => {
+      assert.deepEqual(readMediaManifest(dir, talker),
+        { '2:1700000060': { path: 'wxid_test_assets/a.jpg', kind: 'image' } })
+    })
+})
+
 test('查表按 local_id:create_time，两个分片里同 id 的两条各拿各的图', () => {
-  const manifest = { '7:1700000000': 'assets/old.jpg', '7:1700009999': 'assets/new.jpg' }
-  assert.equal(mediaFor(manifest, { localId: 7, createTime: 1700009999 }), 'assets/new.jpg')
-  assert.equal(mediaFor(manifest, { localId: 7, createTime: 1700000000 }), 'assets/old.jpg')
+  const manifest = {
+    '7:1700000000': { path: 'assets/old.jpg', kind: 'image' as const },
+    '7:1700009999': { path: 'assets/new.jpg', kind: 'image' as const },
+  }
+  assert.equal(mediaFor(manifest, { localId: 7, createTime: 1700009999 })?.path, 'assets/new.jpg')
+  assert.equal(mediaFor(manifest, { localId: 7, createTime: 1700000000 })?.path, 'assets/old.jpg')
   // 旧清单（键只有 id）仍认得出来，不至于因为一次升级就什么都不带
-  assert.equal(mediaFor({ 7: 'assets/legacy.jpg' }, { localId: 7, createTime: 1 }), 'assets/legacy.jpg')
+  assert.equal(mediaFor({ 7: { path: 'assets/legacy.jpg', kind: 'image' } }, { localId: 7, createTime: 1 })?.path,
+    'assets/legacy.jpg')
   assert.equal(mediaFor({}, { localId: 7, createTime: 1 }), undefined)
 })

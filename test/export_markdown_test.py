@@ -53,8 +53,9 @@ class MarkdownExportTests(unittest.TestCase):
             self.assertTrue(rel.startswith(assets_name + '/'), rel)
             # 清单也写了
             manifest = json.loads((Path(tmp) / assets_name / 'manifest.json').read_text(encoding='utf-8'))
-            self.assertEqual(manifest['schema'], 'weflow-media-manifest/v1')
+            self.assertEqual(manifest['schema'], 'weflow-media-manifest/v2')
             self.assertEqual(list(manifest['messages']), ['2:1700000060'])
+            self.assertEqual(manifest['messages']['2:1700000060']['kind'], 'image')
 
     def test_manifest_key_carries_the_timestamp_so_ids_can_repeat_across_shards(self):
         """同一个 local_id 出现在两个分片里（时间不同）时，两条都要有自己的条目。"""
