@@ -85,6 +85,16 @@ class MarkdownExportTests(unittest.TestCase):
             md = Path(md_path).read_text(encoding='utf-8')
             self.assertIn('.gif)', md)
 
+    def test_write_assets_alone_writes_no_markdown(self):
+        """`--media` 走的就是这条：其它格式先抽一次媒体，不该顺手丢下一个 .md 文件。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            assets_name, manifest, written = eh.write_assets(
+                tmp, '会话', [msg(1, 1700000000, image=PNG_B64)])
+            self.assertEqual(len(manifest), 1)
+            self.assertEqual(written, 1)
+            self.assertFalse(list(Path(tmp).glob('*.md')), 'write_assets 不该写 markdown')
+            self.assertTrue((Path(tmp) / assets_name / 'manifest.json').is_file())
+
     def test_text_messages_keep_their_text_and_placeholders_are_replaced_by_images(self):
         with tempfile.TemporaryDirectory() as tmp:
             md_path, _t, _w, _n = eh.write_markdown(

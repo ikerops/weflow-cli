@@ -108,7 +108,7 @@ export class ExportService {
     }
   }
 
-  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; format?: 'html' | 'md' } = {}): Promise<ExportResult> {
+  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; format?: 'html' | 'md'; assetsOnly?: boolean } = {}): Promise<ExportResult> {
     const format = options.format ?? 'html'
     if (format === 'md' && (from !== undefined || to !== undefined)) {
       // 不静默降级成「导出全部」：范围是调用方明确要的，做不到就说出来。
@@ -169,6 +169,7 @@ export class ExportService {
         // 图片落盘 + 清单。资产目录按 **talker** 命名，好让 json/txt/excel 导出能确定性找到它
         // （它们的文件前缀是 talker，而 md 文件名用的是显示名，不显式指定就对不上）。
         args.push('--format', 'md', '--assets-dir', join(outputDir || './output', `${talker}_assets`))
+        if (options.assetsOnly) args.push('--assets-only')
       } else {
         // Paginate: a whole year of chat in one file makes the browser crawl.
         args.push('--per-page', '100')
@@ -253,6 +254,15 @@ export class ExportService {
       if (!quiet) console.error('  ⚠ 已回退到简版 HTML（不含内嵌图片）')
       return this.exportHtmlBasic(talker, outputDir, limit, from, to)
     }
+  }
+
+  /**
+   * 只抽媒体（图片落盘 + 清单），不产出正文 —— `export … json|txt|excel --media` 先跑这一步。
+   * 与 markdown 导出共用同一条 Python 通路与同一个资产目录，所以清单只有一份。
+   */
+  async extractMedia(talker: string, outputDir: string, quiet = false, options: { fullImages?: boolean } = {}): Promise<ExportResult> {
+    return this.exportHtml(talker, outputDir, 0, '', undefined, undefined, quiet,
+      { ...options, format: 'md', assetsOnly: true })
   }
 
   /** markdown + 图片落盘到 `<output>/<talker>_assets/`（同一条 Python 通路，换个输出形态）。 */

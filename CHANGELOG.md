@@ -19,6 +19,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`export … json|txt|excel --media` puts the images in one command.** The markdown export is what extracts
+  media, so the other formats needed it run first - two steps, and a user who did not know that would see
+  `[图片]` and conclude the feature was missing. `--media` runs the same extraction (same Python path, same
+  `<output>/<talker>_assets/`, same manifest) and then writes the format it was asked for. Verified from a clean
+  state: one `export "…" json --media` produced the assets directory and a JSON in which 556 of 1,914 messages
+  carry their image's relative path.
+
 - **Animated GIFs survive every export path - and now the files say so.** Asked whether GIFs come through, the
   answer was measured rather than assumed: of the 556 images in one real conversation, **87 are GIFs** (animated:
   `NETSCAPE2.0` plus frame blocks) and 27 are PNGs, and both the markdown assets and the HTML embeds carried them

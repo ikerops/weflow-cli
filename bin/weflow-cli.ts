@@ -1821,6 +1821,7 @@ program
   .option('--json', '输出机器可读的导出结果，不改变导出文件格式')
   .option('--non-interactive', '禁止交互选择；匹配不唯一时返回错误')
   .option('--full-images', '使用原图而非微信缓存缩略图（更清晰，但导出慢数倍）')
+  .option('--media', 'json/txt/excel 导出时一并抽出图片（落盘到 <输出>/<会话>_assets，并在导出物里给出相对路径）')
   .action(async (talkerInput: string, format: string, opts) => {
     const validFormats = ['json', 'txt', 'html', 'md', 'excel']
     if (!validFormats.includes(format)) {
@@ -1870,6 +1871,16 @@ program
         console.log(chalk.gray('可用: raw, weflow-v1'))
       }
       process.exit(1)
+    }
+    // 图片要靠 Python 那条路匹配（缓存缩略图、资源 md5、原图那档）。`--media` 就是"先抽一次"，
+    // 抽完 json/txt/excel 各自消费同一份清单 —— 匹配只跑一遍，也不会在 TS 里重写一遍。
+    if (opts.media && (format === 'json' || format === 'txt' || format === 'excel')) {
+      const media = await exportService.extractMedia(talker, opts.output, !!opts.json, { fullImages: opts.fullImages === true })
+      if (!media.success) {
+        if (opts.json) console.log(JSON.stringify({ success: false, code: 'MEDIA_EXPORT_FAILED', error: media.error || '媒体抽取失败' }))
+        else console.log(chalk.red(`✗ 媒体抽取失败: ${media.error}`))
+        process.exit(1)
+      }
     }
     switch (format) {
       case 'json':

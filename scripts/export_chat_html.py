@@ -2298,14 +2298,12 @@ p {{ margin:8px 0; font-size:14px; }}
 </html>'''
 
 
-def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
-    """把已格式化的消息写成 markdown，并把图片**落盘**。
+def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
+    """把图片**落盘**并把 `manifest.json` 写好；返回 `(assets 目录名, manifest, 新写文件数)`。
 
-    HTML 走的是"内嵌 base64 ⇒ 单文件可分享"，markdown 的用法是喂给编辑器或别的工具 —— 那里
-    `![](data:image/…)` 多数不被认，图片必须是**文件 + 相对路径**。所以这里不内嵌，而是写文件。
-
-    同时写一份 `manifest.json`（local_id → 相对路径）：这是"其余格式也能带图"的实现方式 ——
-    md 导出**抽取**媒体，json/txt/excel 导出**消费**同一份清单，而不是各自再实现一遍匹配。
+    HTML 走的是"内嵌 base64 ⇒ 单文件可分享"，而 markdown 与其它格式的用法是喂给编辑器/别的工具 ——
+    那里 `![](data:image/…)` 多数不被认，图片必须是**文件 + 相对路径**。所以这里写文件，并留一份清单
+    （键 `local_id:create_time` → 相对路径）：**抽取只做一遍**，json/txt/excel 只是消费它。
     """
     import base64
     import hashlib
@@ -2313,41 +2311,55 @@ def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
     assets = assets_dir or os.path.join(out_dir, file_prefix + '_assets')
     os.makedirs(assets, exist_ok=True)
 
-    lines = ['# %s' % file_prefix, '']
     manifest = {}
     written = 0
+    for item in formatted:
+        blob = item.get('image_b64')
+        if not blob:
+            continue
+        data = base64.b64decode(blob)
+        # 扩展名按**字节**判：实测同一会话 556 张图里 87 个是 GIF、27 个是 PNG，一律叫 .jpg 会让
+        # 编辑器按扩展名解码、把动画表情显示成坏图。
+        mime = detect_mime_from_bytes(data[:32]) or 'image/jpeg'
+        name = 'img_%s_%s%s' % (item.get('local_id'),
+                               hashlib.md5(blob[:64].encode()).hexdigest()[:8],
+                               _IMAGE_EXT_BY_MIME.get(mime, '.jpg'))
+        path = os.path.join(assets, name)
+        if not os.path.exists(path):
+            with open(path, 'wb') as fh:
+                fh.write(data)
+            written += 1
+        # 键带时间戳：**同一个 local_id 会在分片之间重复**（每条会话的表可能存在于多个分片，
+        # id 各片自己编号）—— 只按 local_id 做键，json/txt/excel 会拿别人的图。
+        manifest['%s:%s' % (item.get('local_id'), item.get('create_time'))] = \
+            os.path.relpath(path, out_dir).replace('\\', '/')
+
+    with open(os.path.join(assets, 'manifest.json'), 'w', encoding='utf-8') as fh:
+        json.dump({'schema': 'weflow-media-manifest/v1', 'messages': manifest},
+                  fh, ensure_ascii=False, indent=2)
+    return os.path.basename(os.path.normpath(assets)), manifest, written
+
+
+def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
+    """markdown 正文 + 图片落盘（图片那半在 `write_assets`，两者共用同一份清单）。"""
+    assets_name, manifest, written = write_assets(out_dir, file_prefix, formatted, assets_dir)
+
+    lines = ['# %s' % file_prefix, '']
     for item in formatted:
         who = '我' if (item.get('is_self') or item.get('is_send')) else (item.get('sender') or '')
         # 这个文件是 `import datetime`（模块），且它的时间戳一律是**本地时区**（见 render 那几处），
         # 所以这里也照它的写法，不带 tz —— 导出页里显示的时间与本文件其它时间戳保持一致。
         stamp = datetime.datetime.fromtimestamp(item.get('create_time') or 0).strftime('%Y-%m-%d %H:%M')
         body = plain_fragment(item.get('display') or '', limit=100000) or ''
-        blob = item.get('image_b64')
-        if blob:
-            data = base64.b64decode(blob)
-            mime = detect_mime_from_bytes(data[:32]) or 'image/jpeg'
-            name = 'img_%s_%s%s' % (item.get('local_id'),
-                                   hashlib.md5(blob[:64].encode()).hexdigest()[:8],
-                                   _IMAGE_EXT_BY_MIME.get(mime, '.jpg'))
-            path = os.path.join(assets, name)
-            if not os.path.exists(path):
-                with open(path, 'wb') as fh:
-                    fh.write(data)
-                written += 1
-            rel = os.path.relpath(path, out_dir).replace('\\', '/')
-            # 键带时间戳：**同一个 local_id 会在分片之间重复**（每条会话的表可能存在于多个分片，
-            # id 各片自己编号）—— 只按 local_id 做键，json/txt/excel 会拿别人的图。
-            manifest['%s:%s' % (item.get('local_id'), item.get('create_time'))] = rel
+        rel = manifest.get('%s:%s' % (item.get('local_id'), item.get('create_time')))
+        if rel:
             body = ('' if (not body or body == '[图片]') else body + chr(10) + chr(10)) + '![图片](%s)' % rel
         lines.extend(['**%s** %s' % (who, stamp), '', body.strip() or '（空）', ''])
 
     md_path = os.path.join(out_dir, file_prefix + '.md')
     with open(md_path, 'w', encoding='utf-8') as fh:
         fh.write(chr(10).join(lines))
-    with open(os.path.join(assets, 'manifest.json'), 'w', encoding='utf-8') as fh:
-        json.dump({'schema': 'weflow-media-manifest/v1', 'messages': manifest},
-                  fh, ensure_ascii=False, indent=2)
-    return md_path, len(manifest), written, os.path.basename(os.path.normpath(assets))
+    return md_path, len(manifest), written, assets_name
 
 def main():
     import argparse
@@ -2360,6 +2372,8 @@ def main():
     parser.add_argument('--out', default=os.environ.get('WEFLOW_EXPORT_OUTPUT', './output'), help='Output directory')
     parser.add_argument('--format', choices=('html', 'md'), default='html',
                         help='html=内嵌图片的多分页页面（默认）；md=markdown + 图片落盘到 assets/')
+    parser.add_argument('--assets-only', action='store_true',
+                        help='只抽取媒体到 assets/ 并写清单，不写 markdown（给 json/txt/excel 的 --media 用）')
     parser.add_argument('--assets-dir', default='',
                         help='md 模式下图片落到哪个目录（默认 <out>/<前缀>_assets；同时写 manifest.json）')
     parser.add_argument('--parts', type=int, default=5, help='Number of parts to split into')
@@ -2573,6 +2587,16 @@ def main():
     # Use display name for filename if provided, otherwise fallback to wxid
     file_prefix = sanitize_filename(display_name) if display_name else args.talker.replace('@', '_').replace('/', '_')
 
+    if args.assets_only:
+        # 只抽媒体：其它格式的 `--media` 会先跑这一步，再各自消费清单。
+        assets_name, manifest, asset_new = write_assets(args.out, file_prefix, formatted, args.assets_dir)
+        print(f"Assets: {len(manifest)} image file(s) ({asset_new} new) -> {assets_name}")
+        print(json.dumps({"success": True, "total": len(formatted),
+                          "files": [os.path.join(args.out, assets_name)], "format": "assets",
+                          "assets": len(manifest), "assetsNew": asset_new,
+                          "assetsDir": assets_name}, ensure_ascii=False))
+        conn.close()
+        return
     if args.format == 'md':
         md_path, asset_total, asset_new, assets_name = write_markdown(args.out, file_prefix, formatted, args.assets_dir)
         if media_items:
