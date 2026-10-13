@@ -92,7 +92,7 @@ Linux 的自动初始化能力取决于微信发行版、Python 依赖和当前�
 
 | 场景 | 能力 |
 | --- | --- |
-| 聊天记录 | 查询会话、联系人和消息；导出 JSON、TXT、HTML、Excel。HTML 导出会同时给出一份媒体覆盖报告，说明哪些图片/表情没能嵌入以及原因。 |
+| 聊天记录 | 查询会话、联系人和消息；导出 **Markdown / JSON / TXT / HTML / Excel**。Markdown 导出把图片**落盘**到 `<会话>_assets/`、正文用相对路径引用（喂给编辑器或别的工具时这才是能用的形态）；HTML 导出内嵌图片并给出一份媒体覆盖报告（哪些没嵌上、为什么）。**图片匹配只做一遍**：Markdown 导出写下清单，之后 JSON/TXT/Excel 导出会自动带上同样的图片路径。 |
 | 公众号日报 | 抓取文章、AI 摘要与分类、生成本地阅读页，保留收藏和已读状态。 |
 | 个人知识库 | 同步微信读书笔记、构建 Obsidian Vault、语义搜索、RAG 问答和概念 Wiki，以及**双击就能打开**的概念图谱页面（`weflow-cli wiki graph --open` 出 3D、加 `--flat` 出 2D；自包含、不联网、不需要服务器；`--min-degree N` 只看枢纽、`--line wiki\|chat` 只看一条线）。 |
 | AI 协作 | 通过 MCP 把文章、知识库、日报和受控的本地数据能力交给兼容客户端；工具清单以 `weflow-cli mcp-config` 和 `docs/MCP.md` 为准。 |

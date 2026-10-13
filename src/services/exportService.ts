@@ -1,5 +1,5 @@
 import { join, basename, dirname } from 'path'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { chatService } from './chatService.js'
@@ -15,6 +15,37 @@ export type ExportContract = 'raw' | 'weflow-v1'
 export interface ExportResult { success: boolean; path?: string; count?: number; error?: string }
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * md 导出落盘的媒体清单：`<output>/<talker>_assets/manifest.json`（`local_id` → 相对路径）。
+ *
+ * 这是"其余格式也能带图"的那一半：**md 导出抽取媒体，json/txt/excel 消费同一份清单** —— 匹配逻辑
+ * （缓存缩略图、资源 md5、原图那档）只存在于 Python 那条路上，在这里重写一遍必然与它漂移。
+ * 读不到就返回空表：那说明还没跑过 md 导出，行为与从前一致。
+ */
+/**
+ * 从清单里取这条消息的媒体相对路径。
+ *
+ * 键是 `local_id:create_time`：**local_id 会在分片之间重复**（同一会话的表可能存在于多个分片，
+ * 各片自己编号），只按 local_id 查会让 json/txt/excel 引用到别的消息的图。两条消息硬要同 id 同秒
+ * 才算撞上，那个概率可以忽略；回退查裸 local_id 是为了兼容更早写出的清单。
+ */
+export function mediaFor(manifest: Record<string, string>, message: { localId?: unknown; createTime?: unknown }): string | undefined {
+  const id = String(message.localId)
+  return manifest[`${id}:${message.createTime}`] ?? manifest[id]
+}
+
+export function readMediaManifest(outputDir: string, talker: string): Record<string, string> {
+  try {
+    const file = join(outputDir, `${talker}_assets`, 'manifest.json')
+    if (!existsSync(file)) return {}
+    const data = JSON.parse(readFileSync(file, 'utf8'))
+    const map = data && data.messages
+    return map && typeof map === 'object' ? map : {}
+  } catch {
+    return {}
+  }
+}
 function getPackageRoot(): string {
   return resolvePackageRoot(import.meta.url)
 }
@@ -29,13 +60,21 @@ export class ExportService {
 
       const dir = this.ensureOutputDir(outputDir)
       const filePath = join(dir, `${talker}_messages.json`)
+      // 有清单就带上媒体相对路径（清单由 markdown 导出产生，见 readMediaManifest）
+      const mediaMap = readMediaManifest(dir, talker)
+      const withMedia = Object.keys(mediaMap).length
+        ? messages.map(m => {
+          const media = mediaFor(mediaMap, m)
+          return media ? { ...m, media } : m
+        })
+        : messages
       const payload = contract === 'weflow-v1'
-        ? createWeFlowEnvelope(messages, new Date().toISOString(), {
+        ? createWeFlowEnvelope(withMedia, new Date().toISOString(), {
           requestedFrom: from,
           requestedTo: to,
           requestedLimit: limit,
         })
-        : messages
+        : withMedia
       writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8')
       return { success: true, path: filePath, count: messages.length }
     } catch {
@@ -50,10 +89,13 @@ export class ExportService {
         return { success: false, error: '未找到消息' }
       }
 
+      const mediaMap = readMediaManifest(this.ensureOutputDir(outputDir), talker)
       const lines = messages.map(m => {
         const time = new Date(m.createTime * 1000).toLocaleString('zh-CN')
         const sender = m.isSend ? '我' : (m.senderUsername || talker)
-        const content = m.parsedContent || m.rawContent || ''
+        // 有清单就把 `[图片]` 换成 `[图片: <相对路径>]`，没有就保持原样
+        const media = mediaFor(mediaMap, m)
+        const content = media ? `[图片: ${media}]` : (m.parsedContent || m.rawContent || '')
         return `[${time}] ${sender}: ${content}`
       })
 
@@ -66,7 +108,12 @@ export class ExportService {
     }
   }
 
-  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean } = {}): Promise<ExportResult> {
+  async exportHtml(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean; format?: 'html' | 'md' } = {}): Promise<ExportResult> {
+    const format = options.format ?? 'html'
+    if (format === 'md' && (from !== undefined || to !== undefined)) {
+      // 不静默降级成「导出全部」：范围是调用方明确要的，做不到就说出来。
+      return { success: false, error: 'markdown 导出暂不支持 --from/--to：请用 --date，或整段导出' }
+    }
     try {
       if (from !== undefined || to !== undefined) {
         return this.exportHtmlBasic(talker, outputDir, limit, from, to)
@@ -83,6 +130,9 @@ export class ExportService {
       const passphrase = configService.get('favPassphrase') || cfg.decryptKey || ''
 
       if (!db || !key || !salt) {
+        if (format === 'md') {
+          return { success: false, error: 'markdown 导出需要已配置的数据库与密钥（这条路没有简版回退）' }
+        }
         // Fallback: basic HTML
         let fallbackFrom: number | undefined = from
         let fallbackTo: number | undefined = to
@@ -114,11 +164,15 @@ export class ExportService {
         }
       } catch {}
 
-      const args: string[] = [
-        script,
+      const args: string[] = [script]
+      if (format === 'md') {
+        // 图片落盘 + 清单。资产目录按 **talker** 命名，好让 json/txt/excel 导出能确定性找到它
+        // （它们的文件前缀是 talker，而 md 文件名用的是显示名，不显式指定就对不上）。
+        args.push('--format', 'md', '--assets-dir', join(outputDir || './output', `${talker}_assets`))
+      } else {
         // Paginate: a whole year of chat in one file makes the browser crawl.
-        '--per-page', '100',
-      ]
+        args.push('--per-page', '100')
+      }
       const ownWxid = String(cfg.wxid || '').trim()
       const exportCacheDir = cacheDir && existsSync(cacheDir) ? cacheDir : undefined
       const exportAccountDir = accountDir && existsSync(accountDir) ? accountDir : undefined
@@ -189,9 +243,21 @@ export class ExportService {
       if (date) {
         return { success: false, error: `指定日期导出失败: ${failure}` }
       }
-      // Fallback to basic HTML
+      if (format === 'md') {
+        // markdown 没有「简版」：回退成 HTML 会让调用方以为拿到了 .md。失败就是失败。
+        return { success: false, error: failure }
+      }
+      // Fallback to basic HTML：**这条回退不带内嵌图片**，调用方得知道 ——
+      // 2026-10-13 实测：Python 因一个 AttributeError 退出后，这里静默回退，
+      // 而 CLI 照样打印「✓ 导出成功」，人只会以为导出正常。
+      if (!quiet) console.error('  ⚠ 已回退到简版 HTML（不含内嵌图片）')
       return this.exportHtmlBasic(talker, outputDir, limit, from, to)
     }
+  }
+
+  /** markdown + 图片落盘到 `<output>/<talker>_assets/`（同一条 Python 通路，换个输出形态）。 */
+  async exportMarkdown(talker: string, outputDir: string, limit = 0, date = '', from?: number, to?: number, quiet = false, options: { fullImages?: boolean } = {}): Promise<ExportResult> {
+    return this.exportHtml(talker, outputDir, limit, date, from, to, quiet, { ...options, format: 'md' })
   }
 
   private async exportHtmlBasic(talker: string, outputDir: string, limit = 0, from?: number, to?: number): Promise<ExportResult> {
@@ -228,16 +294,20 @@ export class ExportService {
         { header: '发送者', key: 'sender', width: 15 },
         { header: '类型', key: 'type', width: 10 },
         { header: '内容', key: 'content', width: 80 },
-        { header: '消息ID', key: 'msgId', width: 15 }
+        { header: '消息ID', key: 'msgId', width: 15 },
+        // 有清单时填相对路径（清单由 markdown 导出产生）
+        { header: '媒体', key: 'media', width: 40 }
       ]
 
+      const mediaMap = readMediaManifest(this.ensureOutputDir(outputDir), talker)
       for (const m of messages) {
         sheet.addRow({
           time: new Date(m.createTime * 1000).toLocaleString('zh-CN'),
           sender: m.isSend ? '我' : (m.senderUsername || talker),
           type: this.getMessageTypeName(m.localType),
           content: m.parsedContent || m.rawContent || '',
-          msgId: m.localId
+          msgId: m.localId,
+          media: mediaFor(mediaMap, m) || ''
         })
       }
 

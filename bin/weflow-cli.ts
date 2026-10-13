@@ -1822,7 +1822,7 @@ program
   .option('--non-interactive', '禁止交互选择；匹配不唯一时返回错误')
   .option('--full-images', '使用原图而非微信缓存缩略图（更清晰，但导出慢数倍）')
   .action(async (talkerInput: string, format: string, opts) => {
-    const validFormats = ['json', 'txt', 'html', 'excel']
+    const validFormats = ['json', 'txt', 'html', 'md', 'excel']
     if (!validFormats.includes(format)) {
       if (opts.json) console.log(JSON.stringify({ success: false, code: 'INVALID_FORMAT', error: '导出格式无效', supported: validFormats }))
       else {
@@ -1880,6 +1880,10 @@ program
         break
       case 'html':
         result = await exportService.exportHtml(talker, opts.output, limit, opts.date || '', from, to, !!opts.json, { fullImages: opts.fullImages === true })
+        break
+      case 'md':
+        // markdown + 图片落盘（`<输出>/<talker>_assets/`）；json/txt/excel 之后会自动带上那些图。
+        result = await exportService.exportMarkdown(talker, opts.output, limit, opts.date || '', from, to, !!opts.json, { fullImages: opts.fullImages === true })
         break
       case 'excel':
         result = await exportService.exportExcel(talker, opts.output, limit, from, to)

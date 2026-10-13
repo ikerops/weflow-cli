@@ -2293,6 +2293,53 @@ p {{ margin:8px 0; font-size:14px; }}
 </html>'''
 
 
+def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
+    """把已格式化的消息写成 markdown，并把图片**落盘**。
+
+    HTML 走的是"内嵌 base64 ⇒ 单文件可分享"，markdown 的用法是喂给编辑器或别的工具 —— 那里
+    `![](data:image/…)` 多数不被认，图片必须是**文件 + 相对路径**。所以这里不内嵌，而是写文件。
+
+    同时写一份 `manifest.json`（local_id → 相对路径）：这是"其余格式也能带图"的实现方式 ——
+    md 导出**抽取**媒体，json/txt/excel 导出**消费**同一份清单，而不是各自再实现一遍匹配。
+    """
+    import base64
+    import hashlib
+    os.makedirs(out_dir, exist_ok=True)
+    assets = assets_dir or os.path.join(out_dir, file_prefix + '_assets')
+    os.makedirs(assets, exist_ok=True)
+
+    lines = ['# %s' % file_prefix, '']
+    manifest = {}
+    written = 0
+    for item in formatted:
+        who = '我' if (item.get('is_self') or item.get('is_send')) else (item.get('sender') or '')
+        # 这个文件是 `import datetime`（模块），且它的时间戳一律是**本地时区**（见 render 那几处），
+        # 所以这里也照它的写法，不带 tz —— 导出页里显示的时间与本文件其它时间戳保持一致。
+        stamp = datetime.datetime.fromtimestamp(item.get('create_time') or 0).strftime('%Y-%m-%d %H:%M')
+        body = plain_fragment(item.get('display') or '', limit=100000) or ''
+        blob = item.get('image_b64')
+        if blob:
+            name = 'img_%s_%s.jpg' % (item.get('local_id'), hashlib.md5(blob[:64].encode()).hexdigest()[:8])
+            path = os.path.join(assets, name)
+            if not os.path.exists(path):
+                with open(path, 'wb') as fh:
+                    fh.write(base64.b64decode(blob))
+                written += 1
+            rel = os.path.relpath(path, out_dir).replace('\\', '/')
+            # 键带时间戳：**同一个 local_id 会在分片之间重复**（每条会话的表可能存在于多个分片，
+            # id 各片自己编号）—— 只按 local_id 做键，json/txt/excel 会拿别人的图。
+            manifest['%s:%s' % (item.get('local_id'), item.get('create_time'))] = rel
+            body = ('' if (not body or body == '[图片]') else body + chr(10) + chr(10)) + '![图片](%s)' % rel
+        lines.extend(['**%s** %s' % (who, stamp), '', body.strip() or '（空）', ''])
+
+    md_path = os.path.join(out_dir, file_prefix + '.md')
+    with open(md_path, 'w', encoding='utf-8') as fh:
+        fh.write(chr(10).join(lines))
+    with open(os.path.join(assets, 'manifest.json'), 'w', encoding='utf-8') as fh:
+        json.dump({'schema': 'weflow-media-manifest/v1', 'messages': manifest},
+                  fh, ensure_ascii=False, indent=2)
+    return md_path, len(manifest), written, os.path.basename(os.path.normpath(assets))
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Export WeChat NT chat as HTML')
@@ -2302,6 +2349,10 @@ def main():
     parser.add_argument('--talker', default=os.environ.get('WEFLOW_TALKER'), required=not os.environ.get('WEFLOW_TALKER'), help='Talker username')
     parser.add_argument('--name', default=os.environ.get('WEFLOW_EXPORT_NAME', ''), help='Display name')
     parser.add_argument('--out', default=os.environ.get('WEFLOW_EXPORT_OUTPUT', './output'), help='Output directory')
+    parser.add_argument('--format', choices=('html', 'md'), default='html',
+                        help='html=内嵌图片的多分页页面（默认）；md=markdown + 图片落盘到 assets/')
+    parser.add_argument('--assets-dir', default='',
+                        help='md 模式下图片落到哪个目录（默认 <out>/<前缀>_assets；同时写 manifest.json）')
     parser.add_argument('--parts', type=int, default=5, help='Number of parts to split into')
     parser.add_argument('--wx-dir', default='', help='Traditional WeChat data dir (FileStorage fallback)')
     parser.add_argument('--cache-dir', default=os.environ.get('WEFLOW_EXPORT_CACHE_DIR', ''), help='NT cache directory for image thumbnails')
@@ -2512,6 +2563,23 @@ def main():
 
     # Use display name for filename if provided, otherwise fallback to wxid
     file_prefix = sanitize_filename(display_name) if display_name else args.talker.replace('@', '_').replace('/', '_')
+
+    if args.format == 'md':
+        md_path, asset_total, asset_new, assets_name = write_markdown(args.out, file_prefix, formatted, args.assets_dir)
+        if media_items:
+            media_report_path = os.path.join(args.out, f'{file_prefix}_media.json')
+            with open(media_report_path, 'w', encoding='utf-8') as handle:
+                json.dump(build_media_report(media_items, display_name, args.talker, len(formatted)),
+                          handle, ensure_ascii=False, indent=2)
+        print(f"Markdown: {len(formatted)} message(s), {asset_total} image file(s) ({asset_new} new)"
+              f" -> {os.path.basename(md_path)}")
+        print(json.dumps({"success": True, "total": len(formatted), "parts": 1,
+                          "files": [md_path], "format": "md",
+                          "assets": asset_total, "assetsNew": asset_new,
+                          "assetsDir": assets_name},
+                         ensure_ascii=False))
+        conn.close()
+        return
 
     # Media coverage report. Written beside the HTML parts, under the same
     # prefix, so it is always found next to what it describes.

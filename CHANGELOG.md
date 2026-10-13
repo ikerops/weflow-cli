@@ -19,6 +19,25 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`export … md` exists, and the other formats now carry the same images.** A user reported that only HTML
+  exported images; that was true, and the root cause was not a missing switch. Images are matched through the
+  cache/account indexes, and only the Python exporter did that - so the fix routes markdown through the same
+  Python path (`--format md`) instead of reimplementing the matching in TypeScript. Markdown **writes the images
+  out** to `<output>/<talker>_assets/` and references them relatively, because markdown's job is to be fed to
+  editors and other tools, where `![](data:image/…)` is not understood. That pass also writes
+  `manifest.json`, and `json` / `txt` / `excel` exports in the same directory now pick it up automatically
+  (a `media` field, `[图片: <path>]`, and a 「媒体」 column respectively) - **the matching runs once**, which is
+  the only way two implementations would not drift.
+
+  Two things surfaced while building it, both worth recording. First, the manifest was keyed by `local_id`, and
+  **`local_id` repeats across shards** (a conversation's table can exist in more than one shard, each numbering
+  its own rows): measured on a 1,914-message chat, 763 messages matched 522 entries, so the non-markdown formats
+  would have pointed at the wrong picture. Keyed by `local_id:create_time` now, and all four formats land on 556
+  (= the number of messages with an image). Second, when the Python export failed, the TypeScript side fell back
+  to the basic HTML renderer and the CLI still printed `✓ 导出成功` - a failure dressed as success (it was found
+  by asking for markdown and getting an `.html` file back). Markdown no longer has a silent fallback at all (there
+  is no "basic markdown"), and the HTML fallback now says on stderr that it dropped the images.
+
 - **The default semantic search path warned on stdout — and the warning was the important part.** `semantic_search.py`
   has four `[WARN]` prints; three (the rerank ones) went to **stdout** while the rest already used
   `file=sys.stderr`. Since `search` reranks by default, `search --json` answered with a line of prose *before* the
