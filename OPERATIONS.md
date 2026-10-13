@@ -90,8 +90,10 @@ weflow-cli export "联系人A" json --output ./output
 `INVALID_FORMAT`；markdown 连图一起导出是待办，见 [FUNCTIONAL-IMPROVEMENT-SPEC](./docs/FUNCTIONAL-IMPROVEMENT-SPEC.md)）。
 
 **媒体只有 HTML 那条路带**：图片消息在 `txt` 里是 `[图片]`、在 `json` 里只是 `localType: 3` 加一句
-`parsedContent: "[图片]"` —— 因为这三种导出只读 `message_content`，而图片/文件的关联信息（`local_id`、
-资源 md5）在**别的列**上，目前只有 Python 的 HTML 导出器读它们。HTML 导出会尽力匹配本地图片、表情、
+`parsedContent: "[图片]"`、在 `excel` 里是"类型=图片 / 内容=[图片]"（2026-10-13 实测，同一会话 36 处）。
+缺的**不是 id**：这三种导出都带出了 `localId`（json 的 `localId`、excel 的"消息ID"列），缺的是**把 id
+对应到媒体那一段** —— 缓存目录、资源 md5、缩略图/原图的选择，目前只有 Python 的 HTML 导出器做了。
+HTML 导出会尽力匹配本地图片、表情、
 公众号卡片和其他媒体；匹配不到时应显示类型或占位信息，不应从其他会话猜图。**连 HTML 也不导出文件本体**：
 `.pdf`/`.docx` 这类消息在 HTML 里是一张标题卡片（本机实测这批文件确实存在本地，所以做得到，只是还没做）。
 跨分片数据尤其要保留原始导出和完整上下文，导出后请人工抽查发送者、时间和媒体对应关系。
