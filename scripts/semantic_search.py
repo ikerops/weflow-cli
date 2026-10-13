@@ -545,7 +545,9 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
     try:
         answers, _usage = client.decide(state, questions)
     except Exception as error:
-        print('  [WARN] 重排失败（%s），保持原检索顺序：%s' % (type(error).__name__, error))
+        # `file=sys.stderr`：`--json` 时 stdout 是机器在解析的那一份（同文件其它 WARN 早就这样）
+        print('  [WARN] 重排失败（%s），保持原检索顺序：%s' % (type(error).__name__, error),
+              file=sys.stderr)
         return results
 
     scored = []
@@ -558,7 +560,7 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
         scored.append((value, i, item))
 
     if all(value is None for value, _i, _item in scored):
-        print('  [WARN] 重排没有返回任何可用分数，保持原检索顺序')
+        print('  [WARN] 重排没有返回任何可用分数，保持原检索顺序', file=sys.stderr)
         return results
 
     # 没拿到分数的按原序垫在最后，而不是当成 0 分——"未知"和"不相关"不是一回事。
@@ -567,7 +569,7 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
     top = scored[0]
     if best is not None and best != '候选%d' % top[1]:
         print('  [WARN] 重排自检不一致：逐条打分最高的是候选%d，单选却答 %s'
-              % (top[1], best))
+              % (top[1], best), file=sys.stderr)
 
     ordered = []
     for value, i, item in scored:

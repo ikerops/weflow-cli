@@ -14,7 +14,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
@@ -105,8 +105,11 @@ class OrderingTests(unittest.TestCase):
 
     def test_all_scores_missing_leaves_the_order_alone(self):
         pool = items('甲', '乙', '丙')
-        out = ss.rerank('问题', pool, StubClient(scores={}, best=None))
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        with redirect_stdout(out_buf), redirect_stderr(err_buf):
+            out = ss.rerank('问题', pool, StubClient(scores={}, best=None))
         self.assertEqual([x['title'] for x in out], ['甲', '乙', '丙'])
+        self.assertEqual(out_buf.getvalue(), '', 'stdout 是机器在读的那一份，不许混进告警')
 
 
 class FailSoftTests(unittest.TestCase):
@@ -122,21 +125,25 @@ class FailSoftTests(unittest.TestCase):
 
     def test_a_failed_call_returns_the_original_order(self):
         pool = items('甲', '乙')
-        buffer = io.StringIO()
-        with redirect_stdout(buffer):
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        # 告警必须走 **stderr**：2026-10-13 真机实测，默认路径（带重排）在 `search --json` 下
+        # stdout 第一行曾是 `  [WARN] 重排失败（JevError）… HTTP 451 …`，机器读到的就不是 JSON 了。
+        with redirect_stdout(out_buf), redirect_stderr(err_buf):
             out = ss.rerank('问题', pool, StubClient(error=RuntimeError('boom')))
         self.assertEqual([x['title'] for x in out], ['甲', '乙'])
         self.assertTrue(all('rerankScore' not in x for x in out))
-        self.assertIn('重排失败', buffer.getvalue())
+        self.assertIn('重排失败', err_buf.getvalue())
+        self.assertEqual(out_buf.getvalue(), '', 'stdout 是机器在读的那一份，不许混进告警')
 
     def test_a_disagreeing_self_check_is_reported_but_does_not_reorder(self):
         """逐条打分与单选对不上，通常意味着编号被搞混了——必须说出来。"""
         pool = items('甲', '乙', '丙')
         client = StubClient(scores={'c0': .1, 'c1': .2, 'c2': .9}, best='候选0')
-        buffer = io.StringIO()
-        with redirect_stdout(buffer):
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        with redirect_stdout(out_buf), redirect_stderr(err_buf):
             out = ss.rerank('问题', pool, client)
-        self.assertIn('自检不一致', buffer.getvalue())
+        self.assertIn('自检不一致', err_buf.getvalue())
+        self.assertEqual(out_buf.getvalue(), '', 'stdout 是机器在读的那一份，不许混进告警')
         # 顺序仍按逐条打分——单选只用来报警，不参与排序（否则一次错答就全盘换序）。
         self.assertEqual(out[0]['title'], '丙')
 

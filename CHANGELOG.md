@@ -19,6 +19,27 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The default semantic search path warned on stdout — and the warning was the important part.** `semantic_search.py`
+  has four `[WARN]` prints; three (the rerank ones) went to **stdout** while the rest already used
+  `file=sys.stderr`. Since `search` reranks by default, `search --json` answered with a line of prose *before* the
+  JSON and a machine caller got a parse error instead of results. Fixed, and the three paths now assert
+  `stdout == ''` in `test/semantic_rerank_test.py` — the two tests that already existed there asserted the warning
+  on **stdout**, i.e. they pinned the bug, so they were updated rather than duplicated beside them.
+
+  What the warning was saying, and why it stayed hidden for so long: on this machine the rerank layer **cannot run
+  at all** — `JevError … HTTP 451: Typesafe is not available in your region`. Rerank calls Typesafe
+  (`api.typesafe.ai`), a cloud decision service, not a local model, so on a geo-blocked machine the "default" path
+  is really the un-reranked one and the only signal was that stdout line. Two consequences are deliberately **not**
+  fixed here: the machine-readable result does not say the rerank failed (a degraded search is byte-identical to a
+  successful un-reranked one, because `rerank` returns just the list), and whether the index/rerank split is what
+  users should get on such a machine is a decision, not a patch. Both are written down in `docs/PROJECT_STATE.md`.
+
+- **The semantic index was built and used on a real machine for the first time** (2026-10-13, 7-day chat /
+  3-article window, 749 records, inside DashScope's free quota). The scoped search returns
+  `indexCounts: {all: 749, wiki: 383, chat: 366}` — the two lines add up to the whole index — and a query for
+  `开会` returns a chat message that says `…记得参加会议，8:30`: a semantic hit, not a keyword one. The default
+  90/30 window is still unbuilt (it would exceed the free quota; the measured cost is roughly ¥1.3–2.2).
+
 - **The semantic index would have embedded only the *older* part of its window, silently.** `semantic_search.py`
   opened exactly one file — `config.ntDbPath` — with the account's global key. WeChat 4.x spreads messages across
   shards and **each shard needs its own derived key**; the repo already had that path
