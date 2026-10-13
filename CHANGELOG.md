@@ -19,9 +19,9 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
-- **Two defects in 1.11.0's document export, both found by looking at a real export instead of the code.**
-  Re-exporting one 1,914-message conversation (29 documents on disk) and then checking that every link
-  *resolves* turned up two files that would have been unopenable in the reader's own editor:
+- **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**
+  Re-exporting one 1,914-message conversation (29 documents on disk) and asking whether what got written can
+  actually be **opened** turned up two files that would have been unopenable in the reader's own editor:
 
   1. A document whose name contains a half-width parenthesis - `…开题报告(2).pdf` - landed in the link target
      as-is, and **every markdown renderer ends a target at the first `)`**, so the link stopped at `…报告(2`
@@ -33,9 +33,27 @@ All notable user-facing changes are recorded here. This project follows [Semanti
      with no `.pdf`, leaving the OS and every editor without a clue how to open it. The limit now applies to
      the stem, with the extension kept.
 
-  Both are pinned by tests over the exact real names (`test/export_document_test.py`), and both were
-  **invisible to the code and to the existing tests** - the first pass "worked" and produced a complete-looking
-  asset directory. What caught them was asking whether what got written can actually be *opened*.
+  Both were **invisible to the code and to the existing tests** - the first pass "worked" and produced a
+  complete-looking asset directory. Hunting for the rest of that class turned up three more:
+
+  3. **A filename containing a control character killed the whole export at the last step.** A tab in a message
+     title makes `open()` raise `OSError: Invalid argument` on Windows, and nothing caught it - minutes of
+     parsing and image extraction were thrown away by one bad name. Copy failures (bad name, path too long,
+     target locked) are now counted as `unavailable` instead. Control characters are also stripped from the
+     on-disk name, the link text, and `sanitize_filename` generally.
+  4. **Windows reserved device names** (`CON.pdf`, `NUL.txt`, `aux.docx`) cannot be created at all; they are now
+     prefixed with `_`. Checked alongside: 200-character titles, `[草稿]` brackets, `#`, `%`, quotes, emoji,
+     trailing dots, `|*?` - a battery of 21 real-world names, with every resulting link asserted to *resolve*.
+  5. **A narrower export silently erased a wider one's manifest.** The manifest lives in the shared
+     `<talker>_assets/` directory, so exporting the whole conversation and then running
+     `json --media --limit 600` into the same folder overwrote 585 entries with 150 - the wider run's documents
+     kept their links in the markdown but vanished from the manifest, and neither side reported anything. The
+     manifest is now **merged** with the existing one (entries whose file is gone are dropped), and it records
+     both `copied` (this run) and `exported` (present in the directory), because those were being conflated.
+
+  One more, not a defect but the same "silent" shape: `--media` together with `html` did nothing at all (HTML
+  writes no document bodies by design, so that is not a missing feature) and said nothing, which reads as a
+  broken switch. The CLI now names the reason and points at `md` / `json --media`.
 
 ## 1.11.0
 

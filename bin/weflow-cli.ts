@@ -1881,6 +1881,13 @@ program
         else console.log(chalk.red(`✗ 媒体抽取失败: ${media.error}`))
         process.exit(1)
       }
+    } else if (opts.media && format === 'html') {
+      // HTML 的用法是"单文件可分享"，所以它不写文档本体（把几 MB 的 PDF 内嵌进网页，既打不开也把文件撑大）。
+      // 静默忽略这个开关会让人以为它生效了 —— 明说一句，并给出该用哪个格式。
+      if (!opts.json) {
+        console.error(chalk.gray('  提示：HTML 导出不含文档本体（单文件分享的用法），--media 对它不生效；'))
+        console.error(chalk.gray('        要连文档一起导出请用 md，或 json|txt|excel --media。'))
+      }
     }
     switch (format) {
       case 'json':

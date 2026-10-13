@@ -140,7 +140,7 @@ class WriteDocumentAssetTests(unittest.TestCase):
             record = manifest['messages']['1:1700000000']
             self.assertEqual(record['kind'], 'file')
             self.assertEqual(record['name'], '园区五一假期温馨提示.pdf')
-            self.assertEqual(manifest['documents'], {'exported': 1, 'unavailable': 0})
+            self.assertEqual(manifest['documents'], {'exported': 1, 'copied': 1, 'unavailable': 0})
 
             md = Path(md_path).read_text(encoding='utf-8')
             # 文档要写成**链接**：`![](…)` 会被编辑器当成坏图
@@ -158,7 +158,7 @@ class WriteDocumentAssetTests(unittest.TestCase):
                      document_message(2, 2, info, path=None)]
             _md, _total, _new, assets_name = eh.write_markdown(tmp, '会话', items)
             manifest = json.loads((Path(tmp) / assets_name / 'manifest.json').read_text(encoding='utf-8'))
-            self.assertEqual(manifest['documents'], {'exported': 0, 'unavailable': 2})
+            self.assertEqual(manifest['documents'], {'exported': 0, 'copied': 0, 'unavailable': 2})
             self.assertFalse((Path(tmp) / assets_name / 'files').exists(), '没拷成就不该建目录')
 
     def test_second_run_still_reports_the_documents_it_did_not_have_to_copy(self):
@@ -229,6 +229,81 @@ class WriteDocumentAssetTests(unittest.TestCase):
             self.assertTrue(names[0].endswith('.pdf'), names[0])
             self.assertLessEqual(len(names[0]), 80, names[0])
             self.assertIn('](', Path(md_path).read_text(encoding='utf-8'))
+
+    def test_hostile_filenames_neither_break_the_link_nor_the_whole_export(self):
+        """一批真实会遇到的恶劣文件名。判据是两条：**没有一条链接解不回来**、**没有一个名字能把导出搞崩**。
+
+        这里每一条都对应一次实测（2026-10-13）：
+        - 半角括号 / 空格 → 链接在第一个 `)` 或空白处被截断，点开是空的（真机上踩到过）
+        - 制表符 → `open()` 直接 `OSError: Invalid argument`，而它没被接住，
+          **整次导出会在最后一步崩掉**（前面几分钟的解析与图片抽取全废）—— 这条是最严重的
+        - `CON.pdf` / `NUL.txt` / `aux.docx` → Windows 保留设备名，建出来也打不开
+        - 200 字符长名 → 截断到 80，且**扩展名要留下**
+        - `[草稿] 方案` → 方括号会打断链接自身的结构
+        """
+        titles = [
+            '普通报告.pdf', '开题报告(2).pdf', '开题报告（2）.pdf',
+            'Chang et al 2022 assessment.pdf', 'a#b%c&d+e.pdf', '[草稿] 方案 v2.docx',
+            'tab\tinside.csv', '  前后空格  .docx', '结尾点...docx', 'emoji🎀报告.pdf',
+            'CON.pdf', 'NUL.txt', 'aux.docx', '无扩展名文件', 'x' * 200 + '.pdf',
+            '竖线|星号*问号?.pdf', 'back\\slash.pdf',
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'src')
+            os.makedirs(src)
+            items = []
+            for index, title in enumerate(titles, start=1):
+                body = os.path.join(src, 'body_%02d.bin' % index)
+                Path(body).write_bytes(b'%%PDF-1.4 body %02d' % index)
+                items.append(document_message(index, 1700000000 + index,
+                                              {'title': title, 'ext': '', 'bytes': 18,
+                                               'md5': '%032x' % index}, path=body))
+            out = os.path.join(tmp, 'out')
+            os.makedirs(out)
+            md_path, _total, _new, assets = eh.write_markdown(out, '会话', items)
+            md = Path(md_path).read_text(encoding='utf-8')
+
+            targets = re.findall(r'\]\(([^)\n]*)\)', md)
+            self.assertEqual(len(targets), len(titles))
+            for target in targets:
+                self.assertTrue((Path(out) / urllib.parse.unquote(target)).is_file(), target)
+
+            names = [p.name for p in (Path(out) / assets / 'files').iterdir()]
+            self.assertEqual(len(names), len(titles), '一个都不该被跳过')
+            for name in names:
+                self.assertLessEqual(len(name), 80, name)
+                self.assertFalse(any(ord(ch) < 32 for ch in name), repr(name))
+                self.assertNotIn('\\', name)
+            self.assertIn('_CON.pdf', names, 'Windows 保留设备名要加前缀，否则打不开')
+            self.assertTrue(any(n.endswith('.pdf') and len(n) == 80 for n in names),
+                            '被截断的那个也要留住扩展名')
+
+    def test_a_narrower_later_export_does_not_erase_the_wider_manifest(self):
+        """清单住在共享的 `<会话>_assets/` 里，而导出可以分批做。
+
+        2026-10-13 真机撞上：先整段导（585 条 / 29 份文档），再 `json --media --limit 600`（150 条 / 7 份）
+        导进同一个目录 —— 后者把清单**整个覆盖**了，宽窗口那批文档的条目凭空消失，而 md 正文里的链接还在。
+        两边都不报错，是核对产物才看出来的。
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'src')
+            os.makedirs(src)
+            bodies = {}
+            for index, name in enumerate(('宽窗口.pdf', '窄窗口.docx'), start=1):
+                bodies[name] = os.path.join(src, 'b%d' % index)
+                Path(bodies[name]).write_bytes(b'body %d' % index)
+
+            info_a = {'title': '宽窗口.pdf', 'ext': 'pdf', 'bytes': 6, 'md5': '1' * 32}
+            info_b = {'title': '窄窗口.docx', 'ext': 'docx', 'bytes': 6, 'md5': '2' * 32}
+            eh.write_assets(tmp, '会话', [document_message(1, 100, info_a, path=bodies['宽窗口.pdf'])])
+            _n, manifest, _new = eh.write_assets(
+                tmp, '会话', [document_message(2, 200, info_b, path=bodies['窄窗口.docx'])])
+
+            self.assertIn('1:100', manifest, '窄窗口那次不该把宽窗口的条目删掉')
+            self.assertIn('2:200', manifest)
+            on_disk = json.loads((Path(tmp) / '会话_assets' / 'manifest.json').read_text(encoding='utf-8'))
+            self.assertEqual(on_disk['documents']['exported'], 2)
+            self.assertEqual(on_disk['documents']['copied'], 1, '这一轮只新拷了 1 个')
 
     def test_two_documents_with_the_same_name_do_not_overwrite_each_other(self):
         with tempfile.TemporaryDirectory() as tmp:

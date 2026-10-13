@@ -540,6 +540,10 @@ def scan_account_file_index(account_dir):
             except OSError:
                 continue
             index.setdefault((normalize_asset_name(fname), size), []).append(path)
+    # 排序是为了**可复现**：多候选且消息没带 md5 时取 `[0]`，而 `os.walk` 的顺序不保证稳定 ——
+    # 不排的话，同一次导出在两台机器上可能落到不同名字的副本上。
+    for paths in index.values():
+        paths.sort()
     return index
 
 
@@ -2449,26 +2453,75 @@ p {{ margin:8px 0; font-size:14px; }}
 </html>'''
 
 
+_WINDOWS_RESERVED_NAMES = frozenset(
+    ['con', 'prn', 'aux', 'nul']
+    + ['com%d' % index for index in range(1, 10)]
+    + ['lpt%d' % index for index in range(1, 10)])
+
+
+def _clean_asset_component(text):
+    """把一段文件名清洗到"任何 Windows 上都能创建"。
+
+    在 `sanitize_filename` 之外多管一件会**静默改结果**的事：首尾的空白与点（Windows 会把 `a .` 存成 `a`，
+    于是清单里的名字和磁盘上的名字对不上）。
+    """
+    return sanitize_filename(text).strip().strip('.')
+
+
 def _asset_file_name(title, used_names, source, md5):
     """落盘的文档文件名：保持原样（只清洗非法字符），重名才加 md5 前 8 位。
 
     不改名是刻意的 —— 那是用户自己的文件名，读者要靠它认东西；微信自己也会加 `(1)`。但两个不同来源
     的文件可能同名，那种情况必须区分，否则后来者会覆盖先到者、清单指错文件。
 
-    **截断要在扩展名之前**：真机实测过一个超长标题，`sanitize_filename` 的 80 字符上限把 `.pdf` 一起
-    切掉了，落盘成没有扩展名的文件 —— 系统与编辑器都不知道该用什么打开它。
+    **截断要在扩展名之前**：真机实测过一个超长标题，80 字符上限把 `.pdf` 一起切掉了，落盘成没有扩展名的
+    文件 —— 系统与编辑器都不知道该用什么打开它。
     """
     stem, ext = os.path.splitext(str(title or ''))
-    # 扩展名单独保留（也过一遍非法字符清洗，但不参与"给主干剩下的额度"）
-    ext = sanitize_filename(ext).strip().strip('.')
-    stem = sanitize_filename(stem).strip().strip('.')
+    # 扩展名单独保留（也过一遍清洗），但不参与"给主干剩下的额度"；异常长的"扩展名"当没扩展名处理
+    ext = _clean_asset_component(ext).replace('.', '')
     if len(ext) > 16:
-        stem, ext = sanitize_filename(str(title or '')), ''
-    safe = ((stem[:max(1, 80 - len(ext) - 1)] or 'file') + ('.' + ext if ext else ''))
+        stem, ext = str(title or ''), ''
+    stem = _clean_asset_component(stem)
+    room = max(1, 80 - (len(ext) + 1 if ext else 0))
+    base = stem[:room] or 'file'
+    if base.lower() in _WINDOWS_RESERVED_NAMES:
+        # `CON.pdf` 这类在 Windows 上打不开（会被当成设备名）—— 加个前缀就正常了
+        base = '_' + base
+    safe = base + ('.' + ext if ext else '')
     if used_names.get(safe) in (None, source):
         return safe
     stem, ext = os.path.splitext(safe)
     return '%s_%s%s' % (stem, (md5 or 'copy')[:8], ext)
+
+
+def _load_existing_manifest(manifest_path, out_dir):
+    """读回同目录里已有的清单条目（v1 的裸字符串也认），丢掉**已经不在磁盘上**的那些。
+
+    为什么不是直接覆盖：清单住在 `<会话>_assets/` 这个**共享**目录里，而导出可以分批做
+    （`--limit 200` 一次、整段再一次；md 一次、`json --media` 再一次）。覆盖会让窄窗口那次的清单把宽窗口
+    那次的条目**删掉**，而 md 正文里的链接还在 —— 之后任何"读清单带媒体"的导出都会少一批，
+    且两边都不报错。2026-10-13 真机就是这么撞上的：整段导出的 585 条被 `--limit 600` 那次的 150 条盖掉。
+    """
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    messages = data.get('messages') if isinstance(data, dict) else None
+    if not isinstance(messages, dict):
+        return {}
+    kept = {}
+    for key, value in messages.items():
+        if isinstance(value, str):
+            record = {'path': value, 'kind': 'image'}
+        elif isinstance(value, dict) and isinstance(value.get('path'), str):
+            record = value
+        else:
+            continue
+        if os.path.isfile(os.path.join(out_dir, record['path'].replace('/', os.sep))):
+            kept[key] = record
+    return kept
 
 
 def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
@@ -2487,7 +2540,9 @@ def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
     assets = assets_dir or os.path.join(out_dir, file_prefix + '_assets')
     os.makedirs(assets, exist_ok=True)
 
-    manifest = {}
+    # 与已有清单**合并**：分批导出时，窄窗口那一次不该把宽窗口那次的条目删掉（见 `_load_existing_manifest`）。
+    manifest_path = os.path.join(assets, 'manifest.json')
+    manifest = _load_existing_manifest(manifest_path, out_dir)
     written = 0
     for item in formatted:
         blob = item.get('image_b64')
@@ -2512,7 +2567,6 @@ def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
             'kind': 'image',
         }
 
-    file_exported = 0
     file_written = 0
     file_unavailable = 0
     files_dir = os.path.join(assets, _FILE_ASSET_SUBDIR)
@@ -2536,13 +2590,18 @@ def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
                                 info.get('md5'))
         target = os.path.join(files_dir, name)
         if used_names.get(name) != source:
-            os.makedirs(files_dir, exist_ok=True)
-            if not os.path.exists(target):
-                with open(target, 'wb') as dst, open(source, 'rb') as src:
-                    shutil.copyfileobj(src, dst)
-                file_written += 1
+            try:
+                os.makedirs(files_dir, exist_ok=True)
+                if not os.path.exists(target):
+                    with open(target, 'wb') as dst, open(source, 'rb') as src:
+                        shutil.copyfileobj(src, dst)
+                    file_written += 1
+            except OSError:
+                # 一个文件拷不进去（名字太怪、路径过长、目标被占用）不能让**整次导出**在最后一步崩掉 ——
+                # 前面几分钟的解析与图片抽取都在，代价只是这一份文档缺失，且它会计入 unavailable。
+                file_unavailable += 1
+                continue
         used_names[name] = source
-        file_exported += 1
         manifest['%s:%s' % (item.get('local_id'), item.get('create_time'))] = {
             'path': os.path.relpath(target, out_dir).replace('\\', '/'),
             'kind': 'file',
@@ -2550,12 +2609,16 @@ def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
             'bytes': size,
         }
 
+    # `exported` 数的是**合并后清单里真实存在的文档条目**（第二遍跑同一目录时它不为 0，而新拷贝是 0）；
+    # `copied` 才是"这次新拷了几个"。两个都写出来，免得读清单的人把后者当前者。
+    file_exported = sum(1 for record in manifest.values() if record.get('kind') == 'file')
     FILE_ASSET_STATE['exported'] = file_exported
     FILE_ASSET_STATE['written'] = file_written
     FILE_ASSET_STATE['unavailable'] = file_unavailable
-    with open(os.path.join(assets, 'manifest.json'), 'w', encoding='utf-8') as fh:
+    with open(manifest_path, 'w', encoding='utf-8') as fh:
         json.dump({'schema': 'weflow-media-manifest/v2', 'messages': manifest,
-                   'documents': {'exported': file_exported, 'unavailable': file_unavailable}},
+                   'documents': {'exported': file_exported, 'copied': file_written,
+                                 'unavailable': file_unavailable}},
                   fh, ensure_ascii=False, indent=2)
     return os.path.basename(os.path.normpath(assets)), manifest, written + file_written
 
@@ -2601,7 +2664,11 @@ def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
             if rel and kind == 'file':
                 # 文档不是图片：`![](…)` 会被当成坏图，要写成链接，链接文字用原始文件名。
                 keep = '' if (not body or body.startswith('[文件]')) else body + chr(10) + chr(10)
-                text = (label or os.path.basename(rel)).replace('[', '&#91;').replace(']', '&#93;')
+                # 链接文字用原始文件名；`[`/`]` 换成实体（`[草稿] 方案.docx` 会把链接本身的结构打断），
+                # 控制字符去掉（标题里可能带换行/制表符，落盘名已去掉，文字也得跟上，否则渲染出来断开）
+                text = ''.join(ch for ch in (label or os.path.basename(rel))
+                               if ord(ch) >= 32 and ord(ch) != 127)
+                text = text.replace('[', '&#91;').replace(']', '&#93;')
                 body = keep + '[%s](%s)' % (text, _markdown_link_target(rel))
             elif rel:
                 body = ('' if (not body or body == '[图片]') else body + chr(10) + chr(10)) \
@@ -2954,8 +3021,13 @@ def _phase(label):
 
 
 def sanitize_filename(name: str) -> str:
-    """Remove characters unsafe for filenames."""
-    return re.sub(r'[\\/:*?"<>|]', '_', name)[:80]
+    """Remove characters unsafe for filenames.
+
+    控制字符也要去掉：它们不在"非法字符"那张表里，但 Windows 创建时会直接
+    `OSError: Invalid argument`（2026-10-13 实测到一个带制表符的标题把整个导出搞崩）。
+    """
+    kept = ''.join(ch for ch in str(name or '') if ord(ch) >= 32 and ord(ch) != 127)
+    return re.sub(r'[\\/:*?"<>|]', '_', kept)[:80]
 
 
 if __name__ == '__main__':
