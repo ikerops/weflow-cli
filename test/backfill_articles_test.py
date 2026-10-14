@@ -7,6 +7,7 @@
 都钉住，而不是只断言"文件存在"。
 """
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -52,6 +53,189 @@ def article(**over):
     }
     base.update(over)
     return base
+
+
+class FetchCacheTests(unittest.TestCase):
+    """补历史的正文要落进**日报那条同一个缓存**。
+
+    为什么值得钉：两条路本来就共用 `fetch_article`，但缓存只有日报在用。补完历史之后逐天
+    `daily --date X` 之所以能快、且产出与平常一样完整（含摘要与配图），全靠正文已经在
+    `output/.cache/fetch/` 里 —— 而"写缓存"这件事**漏了不会报错**，只会在几天后表现为
+    "日报又跑了一整天"。所以这里在真链路上断言：成功写、失败不写、已有则不打网络。
+    """
+
+    def test_抓到的正文写进日报缓存_抓失败的不写(self):
+        import biz_daily
+        url = 'http://mp.weixin.qq.com/s?__biz=AAA&mid=9&idx=1&sn=ccc'
+        body = '正文。' * 60
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(biz_daily, 'FETCH_CACHE_DIR', tmp), \
+                 mock.patch.object(biz_daily, 'fetch_article', lambda _u: body):
+                arts = [article(url=url)]
+                bf.fetch_bodies(arts, workers=1)
+            cached = Path(tmp) / (hashlib.md5(url.encode()).hexdigest() + '.md')
+            self.assertTrue(cached.is_file(), '正文没进日报缓存 ⇒ 之后 daily 会重新联网抓一遍')
+            self.assertEqual(cached.read_text(encoding='utf-8'), body)
+            self.assertEqual(arts[0]['fetched_md'], body)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(biz_daily, 'FETCH_CACHE_DIR', tmp), \
+                 mock.patch.object(biz_daily, 'fetch_article', lambda _u: None):
+                bf.fetch_bodies([article(url=url)], workers=1)
+            self.assertEqual(list(Path(tmp).glob('*.md')), [], '抓失败不该落缓存：下次要重试')
+
+    def test_已有缓存时不再打扰上游(self):
+        import biz_daily
+        url = 'http://mp.weixin.qq.com/s?__biz=AAA&mid=7&idx=1&sn=ddd'
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / (hashlib.md5(url.encode()).hexdigest() + '.md')).write_text(
+                '早已抓过。' * 40, encoding='utf-8')
+            calls = []
+
+            def spy(u):
+                calls.append(u)
+                return '网络抓的。' * 40
+
+            with mock.patch.object(biz_daily, 'FETCH_CACHE_DIR', tmp), \
+                 mock.patch.object(biz_daily, 'fetch_article', spy):
+                arts = [article(url=url)]
+                bf.fetch_bodies(arts, workers=1)
+            self.assertEqual(calls, [], '命中缓存还要联网，等于把日报那份节流白算')
+            self.assertIn('早已抓过', arts[0]['fetched_md'])
+
+    def test_强制重抓会联网并把缓存刷成新的(self):
+        """`--no-fetch-cache` 只跳过"读"，不是"不写"：抓成功要把旧缓存更新掉。"""
+        import biz_daily
+        url = 'http://mp.weixin.qq.com/s?__biz=AAA&mid=5&idx=1&sn=eee'
+        path = Path
+        with tempfile.TemporaryDirectory() as tmp:
+            cached = path(tmp) / (hashlib.md5(url.encode()).hexdigest() + '.md')
+            cached.write_text('旧正文。' * 40, encoding='utf-8')
+            calls = []
+            with mock.patch.object(biz_daily, 'FETCH_CACHE_DIR', tmp), \
+                 mock.patch.object(biz_daily, 'fetch_article',
+                                   lambda u: (calls.append(u), '新正文。' * 40)[1]):
+                arts = [article(url=url)]
+                bf.fetch_bodies(arts, workers=1, use_cache=False)
+            self.assertEqual(len(calls), 1, '强制重抓却没联网')
+            self.assertEqual(cached.read_text(encoding='utf-8'), '新正文。' * 40,
+                             '重抓成功要把缓存刷新，否则下次还在读旧的')
+            self.assertEqual(arts[0]['fetched_md'], '新正文。' * 40)
+
+    def test_强制重抓失败时不动已有的有效缓存(self):
+        import biz_daily
+        url = 'http://mp.weixin.qq.com/s?__biz=AAA&mid=4&idx=1&sn=fff'
+        path = Path
+        with tempfile.TemporaryDirectory() as tmp:
+            cached = path(tmp) / (hashlib.md5(url.encode()).hexdigest() + '.md')
+            cached.write_text('旧正文。' * 40, encoding='utf-8')
+            with mock.patch.object(biz_daily, 'FETCH_CACHE_DIR', tmp), \
+                 mock.patch.object(biz_daily, 'fetch_article', lambda _u: None):
+                arts = [article(url=url, fetched_md='')]
+                result = bf.fetch_bodies(arts, workers=1, use_cache=False)
+            self.assertEqual(result['ok'], 0)
+            self.assertEqual(cached.read_text(encoding='utf-8'), '旧正文。' * 40,
+                             '抓失败把旧缓存清掉/写空 = 下次连旧的都没了')
+            self.assertFalse(arts[0].get('fetched_md'))
+
+    def test_缓存不可写时不影响这一篇(self):
+        """缓存是加速器，不是依赖：写不进去也要照常拿到正文。
+
+        否则一次目录权限/磁盘问题会把"抓到了"变成"失败"，进而让整天的产出少几篇——
+        而那个后果看起来是"这几篇文章本来就没有正文"。
+        """
+        import biz_daily
+        url = 'http://mp.weixin.qq.com/s?__biz=AAA&mid=3&idx=1&sn=ggg'
+        body = '正文。' * 60
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / 'not-a-dir'
+            blocker.write_text('我是个文件，不是目录', encoding='utf-8')
+            with mock.patch.object(biz_daily, 'FETCH_CACHE_DIR', str(blocker / 'fetch')), \
+                 mock.patch.object(biz_daily, 'fetch_article', lambda _u: body):
+                arts = [article(url=url, fetched_md='')]
+                result = bf.fetch_bodies(arts, workers=1)
+            self.assertEqual(result['ok'], 1, '缓存写不进去不该让这一次抓取算失败')
+            self.assertEqual(result['failed'], 0)
+            self.assertEqual(arts[0]['fetched_md'], body)
+
+    def test_并发抓取时结果不会串行错位(self):
+        """并发是这里唯一的实现选择，而"下标错位"是它最容易出的错（本仓踩过同类）。
+
+        5 篇、偶数篇抓得到、奇数篇抓不到：每一篇的正文必须回到**它自己**那条记录上。
+        """
+        import biz_daily
+        urls = ['http://mp.weixin.qq.com/s?__biz=B&mid=%d&idx=1&sn=h%d' % (i, i) for i in range(5)]
+
+        def fake(u):
+            n = int(u.split('mid=')[1].split('&')[0])
+            return ('第%d篇正文。' % n) * 40 if n % 2 == 0 else None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(biz_daily, 'FETCH_CACHE_DIR', tmp), \
+                 mock.patch.object(biz_daily, 'fetch_article', fake):
+                arts = [article(url=u, fetched_md='') for u in urls]
+                result = bf.fetch_bodies(arts, workers=3)
+            self.assertEqual(result, {'attempted': 5, 'ok': 3, 'failed': 2})
+            for n, item in enumerate(arts):
+                if n % 2 == 0:
+                    self.assertTrue(item['fetched_md'].startswith('第%d篇' % n),
+                                    '第%d篇拿到了别人的正文' % n)
+                else:
+                    self.assertFalse(item.get('fetched_md'), '第%d篇不该有正文' % n)
+
+
+class FetchFailedDayTests(unittest.TestCase):
+    """抓取失败的那天**不算做完**，重跑要能补齐 —— 这条链断了的话，一次网络抖动会被
+    "这天已回填"永久埋掉：文件在、索引在、md 也有，少的那几篇谁都看不出来。
+
+    仓库里量过同类事故：84 次失败里 28 次重试就能拿到。而"正文本来就短"是另一件事，
+    它不该让这天永远重做——两种情况在产物里必须能分开。
+    """
+
+    def _day(self, tmp, failed):
+        arts = [article(title='第%d篇某篇文章' % i, fetched_md='正文。' * 60)
+                for i in range(3)]
+        return bf.write_day(arts, '2026-03-05', tmp, fetch_failed=failed)
+
+    def test_失败数写进产物且这天判为没做完(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._day(tmp, 2)
+            payload = json.loads((Path(tmp) / '2026-03-05' / '.articles.json').read_text(encoding='utf-8'))
+            self.assertEqual(payload['fetchFailed'], 2)
+            self.assertEqual(result['fetchFailed'], 2)
+            self.assertFalse(bf.day_done(tmp, '2026-03-05'),
+                             '"有篇没抓到"被当成做完了 ⇒ 以后不会再重试，那几篇永久缺失')
+            readme = (Path(tmp) / '2026-03-05' / 'README.md').read_text(encoding='utf-8')
+            self.assertIn('2 篇正文没抓到', readme, 'README 得说出来，否则"少了 2 篇"读起来像"这天就这些"')
+
+    def test_补齐之后标记消失_这天恢复为完整(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._day(tmp, 2)
+            # 重跑：这次全抓到了（全量跑 ⇒ 上一轮失败的篇也在这次的重试范围内）
+            self._day(tmp, 0)
+            payload = json.loads((Path(tmp) / '2026-03-05' / '.articles.json').read_text(encoding='utf-8'))
+            self.assertNotIn('fetchFailed', payload,
+                             '标记不是 sticky 的：全量跑一轮没失败就说明补齐了，否则这天永远重做')
+            self.assertTrue(bf.day_done(tmp, '2026-03-05'))
+
+    def test_局部回填不会把上一轮的全量失败抹掉(self):
+        """`--topic` 只覆盖一部分文章，它没重试到的那些（别的主题）还在。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._day(tmp, 3)
+            arts = [article(topic='AI', title='只有 AI 的一篇', fetched_md='正文。' * 60)]
+            bf.write_day(arts, '2026-03-05', tmp, topic_filter=['AI'], fetch_failed=0)
+            payload = json.loads((Path(tmp) / '2026-03-05' / '.articles.json').read_text(encoding='utf-8'))
+            self.assertEqual(payload.get('fetchFailed'), 3,
+                             '局部跑把上一轮的全量失败抹掉了 ⇒ 那几篇再也不会被重试')
+            self.assertFalse(bf.day_done(tmp, '2026-03-05'))
+
+    def test_没失败的一天产物里就没有这个键(self):
+        """全量回填写出来的文件要与以前逐字节相同（`day_done` 把缺键读作"完整"）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._day(tmp, 0)
+            payload = json.loads((Path(tmp) / '2026-03-05' / '.articles.json').read_text(encoding='utf-8'))
+            self.assertNotIn('fetchFailed', payload)
+            self.assertTrue(bf.day_done(tmp, '2026-03-05'))
 
 
 class BodyTests(unittest.TestCase):

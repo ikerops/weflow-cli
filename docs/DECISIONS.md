@@ -1406,6 +1406,39 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-108: 回填与日报共用一份正文缓存，但两条流水线仍然是两条
+
+**Status:** Active（判据来自 2026-10-14 的真机实测：一天的回填把缓存从 57 个文件灌到 202 个）
+
+**Decision.** 历史回填 `backfill_articles.py` 的正文抓取改为调用**日报自己那个** `biz_daily.fetch_article_cached`：
+成功结果写进 `output/.cache/fetch/<md5(url)>.md`（与日报同一份、仍是"只缓存非空成功"），命中缓存时不联网；
+两边都有 `--no-fetch-cache`，**同名同义**（跳过"读"，成功的仍然写回，所以它同时是"刷新旧缓存"）。两条流水线
+**本身不合并**：输出形态不同（纯文本 vs HTML+图片）、抓取策略不同（回填并发且不节流，日报串行且刻意 8–12 秒
+节流以少打扰上游）——共用缓存 ≠ 共用流程。节流的 `sleep` 在日报的**调用循环**里、不在抓取函数里，所以命中
+缓存的篇既不联网也不睡。
+
+**Reason: 让"补历史"与"正式产出"少重抓一遍。** 实测 2026-10-13 那天：回填灌了 **145 条缓存**
+（57 → 202 个文件，与"尝试 152、成功 145"逐条对上），而这 145 篇正是回填认为"正文太短、必须联网取"的那批。
+
+**但接力是部分的，这一点别读多。** 日报的 Phase 1 对**每篇有 url 的文章**都抓（它要完整正文来写摘要），
+而回填只抓"本地正文短于 100 字"的那些、其余的连请求都不发。实测同一天：485 篇里**只有 145 篇在缓存里，
+日报重跑仍需联网 340 篇**（按 8–12 秒节流约 55 分钟）。所以要"把这一天正式产出"仍然要付大部分抓取成本，
+省下的是那 145 篇。反向那一半是成立的：日报跑过的天，回填重跑时不再打扰上游。
+
+想让它真的全命中，得让回填**也**去取那些本不需要取的正文——那是**增加对上游的请求**，而
+`docs/NEXT_ACTIONS.md` 明确说过不要"通过改变默认行为造成额外请求"，所以默认不这么做；要做就做一个显式开关
+（例如 `--prefetch-all`），由使用者决定。**这项没做**，留在这里当已知边界。
+
+**Consequences.**
+- 缓存只代表"曾经成功抓到过"，**不代表正文是最新的**：源站改稿不会反映到缓存里。要刷新只能显式
+  `--no-fetch-cache`；默认行为不为"可能过期"付费（这是 `docs/NEXT_ACTIONS.md` 点名的取舍）。
+- `output/.cache/fetch/` 从此是两条线共用的状态。删掉它只影响耗时（各自退回"要重新抓"），不影响产出内容。
+- **抓取失败与"正文本来就短"从此分开记**：`.articles.json` 多一个可选键 `fetchFailed`（该轮抓取失败的篇数），
+  `day_done` 据此判那天**没做完** ⇒ 下次重跑只重试失败的篇，成功的那批走缓存。它与另两个标记
+  （`topicFilter`、`truncated`）有一点不同：**不是 sticky 的**——一次零失败的全量跑说明（含上轮失败的）都补齐了，
+  标记就该消失，否则那天会被永远重做。两种情况的区别是有代价的：把它们混成一句"跳过 N 篇（正文太短）"时，
+  一次网络抖动会被写成"这几篇本来就没有正文"，而那些篇再也不会被重试（同仓库量过：84 次失败里 28 次重试可得）。
+
 ## D-107: 报"客户端运行时版本"，判据是活进程，不是 exe 里的字面量
 
 **Status:** Active（做法来自一份**实测的启动器逆向报告**——报告在本仓库外，含真实的开发者用户名与
@@ -2817,6 +2850,12 @@ conversations and that this path never fetches. Anything scripted against a part
 infer completeness from the presence of `.articles.json`. An unknown `--topic` is rejected before the database is
 opened, since a typo would otherwise select 0 articles and report "nothing to do" - indistinguishable from a day that
 genuinely had none.
+
+**A third marker joined them on 2026-10-14**: `fetchFailed` records a body fetch that failed *in that run*, so one
+network hiccup is no longer written down as "skipped N (body too short)" with the day still counted as done - which
+is how those articles used to disappear for good. Unlike `topicFilter` and `truncated` it is **not** sticky: a full
+run with zero failures proves the earlier ones were recovered, so the marker clears (and the cache makes that retry
+cheap). See D-108.
 
 ## D-059: The ball's eyes follow the mouse - and that makes the cursor position a data flow, so it is written down
 

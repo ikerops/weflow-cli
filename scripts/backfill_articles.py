@@ -54,7 +54,8 @@ from _utils import load_config  # noqa: E402
 from biz_daily import (DEFAULT_RELEVANCE, DEFAULT_TOPIC, TOPICS,  # noqa: E402
                        _group_by_topic, _guess_topic, _serializable_article,
                        _tags_for_write, extract_article_info, fetch_article,
-                       get_db_keys, sanitize_filename, summary_section)
+                       fetch_article_cached, get_db_keys, sanitize_filename,
+                       summary_section)
 from _utils import strip_wx_ads_document, write_with_frontmatter  # noqa: E402
 
 TZ = timezone(timedelta(hours=8))
@@ -159,20 +160,32 @@ def select_topics(articles, topics):
     return [a for a in articles if a.get('topic') in topics]
 
 
-def fetch_bodies(articles, workers: int, log=None):
+def fetch_bodies(articles, workers: int, log=None, use_cache: bool = True):
     """并发把这批文章的正文抓回来，写进 `fetched_md`。
 
     **只抓正文，不碰图片**——`fetch_article` 返回的 markdown 里图片是链接，本脚本
     就此打住，不再像 `biz_daily` 那样逐张下到本地（那一步占了实测 30 秒/篇里的绝大部分）。
+
+    **走 `fetch_article_cached`（日报那条同一个缓存）**，理由是把"补历史"和"正日报"
+    接起来：补完的正文落在 `output/.cache/fetch/<md5(url)>.md`，随后逐天
+    `daily --date X` 全是缓存命中——而日报的 8–12 秒节流在它的**调用循环**里
+    （`biz_daily` 抓取那一段），命中缓存既不联网也不睡，所以正式路径能快速产出
+    与平常完全一样的完整日报（含摘要与配图）。反过来也一样：日报跑过的天，这里重抓
+    时直接命中，不会再去打扰上游。
+
+    `use_cache=False`（`--no-fetch-cache`）**只跳过"读"**：仍然照常联网，成功结果照常
+    写回缓存。这样"强制重抓"既是"这次不看旧缓存"，也是"把旧缓存刷新成新的"。
+    **失败不写缓存**（由 `fetch_article_cached` 保证），所以重抓失败不会把已有的有效
+    缓存清掉或弄脏。
     """
     todo = [a for a in articles
             if len(body_without_media(a.get('local_text'))) < MIN_BODY_CHARS and a.get('url')]
     if not todo:
-        return {'attempted': 0, 'ok': 0}
+        return {'attempted': 0, 'ok': 0, 'failed': 0}
 
     def one(article):
         try:
-            body = fetch_article(article['url'])
+            body, _hit = fetch_article_cached(article['url'], use_cache=use_cache)
         except Exception:
             return False
         if body:
@@ -184,9 +197,11 @@ def fetch_bodies(articles, workers: int, log=None):
     with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
         for result in pool.map(one, todo):
             ok += 1 if result else 0
+    failed = len(todo) - ok
     if log:
-        log('    抓正文: 尝试 %d，成功 %d，并发 %d' % (len(todo), ok, workers))
-    return {'attempted': len(todo), 'ok': ok}
+        log('    抓正文: 尝试 %d，成功 %d%s，并发 %d'
+            % (len(todo), ok, ('，失败 %d' % failed) if failed else '', workers))
+    return {'attempted': len(todo), 'ok': ok, 'failed': failed}
 
 
 def _read_index(day_dir) -> dict:
@@ -226,7 +241,7 @@ def _merge_articles(kept, fresh):
     return sorted(merged.values(), key=lambda e: (str(e.get('time', '')), str(e.get('title', ''))))
 
 
-def write_day(articles, day, out_root, topic_filter=None, truncated=False):
+def write_day(articles, day, out_root, topic_filter=None, truncated=False, fetch_failed=0):
     """落盘：`<日期>/<主题>/<来源>-<标题>.md` + `.articles.json` + README。
 
     格式与 `biz_daily` 一致——`create_reading_notes` 与 `compile_wiki` 都按那个形状读。
@@ -324,6 +339,17 @@ def write_day(articles, day, out_root, topic_filter=None, truncated=False):
     if truncated or prior.get('truncated'):
         # `truncated` 一旦记上就不撤销：这一次没截，不代表上一次截掉的那些补回来了。
         payload['truncated'] = True
+    # **抓取失败要与"正文本来就短"分开记**，否则一句"跳过 N 篇（正文太短）"把两件事混成
+    # 一件：前者这一轮可重试、后者是文章自己的属性。这个标记让 `day_done` 把这一天判成
+    # **没做完**，于是下次重跑会再试一遍——正文命中缓存的那批不花钱，只重试失败的。
+    #
+    # 它**不是 sticky 的**（与 `truncated` 不同）：全量跑完一轮、一篇都没失败，就说明
+    # 上一次失败的那些也补齐了，标记该消失。但**局部**跑（`--topic`）只覆盖一部分文章，
+    # 它没重试到的那些（别的主题）还在，所以那一档只保证"至少还有这么多"，取两轮的较大者。
+    carried_failed = int(prior.get('fetchFailed') or 0)
+    failed_total = fetch_failed if topic_filter is None else max(fetch_failed, carried_failed)
+    if failed_total:
+        payload['fetchFailed'] = failed_total
     (out_dir / '.articles.json').write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     if scope_filter:
@@ -333,11 +359,19 @@ def write_day(articles, day, out_root, topic_filter=None, truncated=False):
         scope = ''
     # README 说的是**这一天**有几篇（合并后的），不是这一轮写了几篇 —— 分两次回填的那天，
     # 前者才是读它的人想要的数。
+    failed_note = ''
+    if failed_total:
+        # 让人**看得见**这天没做完：README 是这个目录里唯一给人看的文件，
+        # 只写"共 N 篇"会让"少了 N 篇"读起来像"这天就这些文章"。
+        failed_note = ('\n其中 **%d 篇正文没抓到**（网络/来源问题），这一天不算完成；'
+                       '重跑会只重试这些篇（其余走缓存）。\n' % failed_total)
     (out_dir / 'README.md').write_text(
         '# 公众号文章 — %s（历史回填）\n\n共 %d 篇。正文由 `backfill_articles.py` 抓取，'
-        '**未下载图片、未调用模型**。\n%s' % (day, len(payload['articles']), scope), encoding='utf-8')
+        '**未下载图片、未调用模型**。\n%s%s' % (day, len(payload['articles']), scope, failed_note),
+        encoding='utf-8')
     return {'written': len(written), 'skipped': len(skipped),
-            'fallbackTopics': fallbacks, 'skipSample': skipped[:3]}
+            'fallbackTopics': fallbacks, 'skipSample': skipped[:3],
+            'fetchFailed': failed_total}
 
 
 def copy_to_vault(day: str, out_root: str, vault_root: str) -> dict:
@@ -429,6 +463,11 @@ def day_done(out_root, day, topics=None) -> bool:
         return False
     if payload.get('truncated'):
         return False
+    if payload.get('fetchFailed'):
+        # 上一次这天有文章**抓取失败**（不是"正文本来就短"）。不算做完 ⇒ 下次重跑会再试。
+        # 不计这一条的话，一次网络抖动就会被"这天已回填"永久埋掉：文件在、索引在、md 也有，
+        # 少的那几篇谁都看不出来。仓库里量过同类事故：84 次失败里 28 次重试就能拿到。
+        return False
     stored = payload.get('topicFilter')
     if stored is None:
         return True            # 完整的一天，所有主题都在
@@ -460,7 +499,13 @@ def main():
                         help='只回填这些主题（可重复或逗号分隔，合法值 %s），不写=全部。'
                              '只回填过一部分主题的一天，之后跑全量时不会被跳过。'
                              % '/'.join(TOPICS))
-    parser.add_argument('--refresh', action='store_true', help='已回填过的天也重做（默认跳过）')
+    parser.add_argument('--no-fetch-cache', action='store_true',
+                        help='忽略正文抓取缓存，强制重新抓取（默认命中缓存，用于续跑与重跑）。'
+                             '与日报的同名开关行为一致；**与 --refresh 不是一回事**，'
+                             '后者重做"哪几天"，它重抓"哪几篇的正文"')
+    parser.add_argument('--refresh', action='store_true',
+                        help='已回填过的天也重做（默认跳过）。它决定**处理哪些天**，'
+                             '不改变正文的抓取方式——要绕过缓存重抓正文用 --no-fetch-cache')
     parser.add_argument('--max-days', type=int, default=0, help='最多处理几天（0=不限，用于试跑）')
     parser.add_argument('--dry-run', action='store_true', help='只报到要抓多少，不抓不写')
     parser.add_argument('--yes', action='store_true', help='确认抓取并写入文件')
@@ -592,16 +637,21 @@ def main():
     report = []
     for index, (day, articles, truncated) in enumerate(todo, 1):
         print('\n[%d/%d] %s — 选中 %d 篇' % (index, len(todo), day, len(articles)))
-        fetch = fetch_bodies(articles, args.workers, log=print)
-        result = write_day(articles, day, args.out, topic_filter=topics, truncated=truncated)
+        fetch = fetch_bodies(articles, args.workers, log=print,
+                             use_cache=not args.no_fetch_cache)
+        result = write_day(articles, day, args.out, topic_filter=topics, truncated=truncated,
+                            fetch_failed=fetch['failed'])
         print('    写入 %d 篇，跳过 %d 篇（正文太短），主题兜底 %d 篇'
               % (result['written'], result['skipped'], result['fallbackTopics']))
+        if fetch['failed']:
+            print('    ⚠ 有 %d 篇正文没抓到：这天不算完成，重跑会只重试这些篇'
+                  % fetch['failed'])
         if args.vault_copy:
             sync = copy_to_vault(day, args.out, args.vault_root)
             print('    入 Vault 的 Sources: %d 个 md' % sync['copied'])
         report.append({'date': day, 'inDb': len(articles), 'fetched': fetch['ok'],
-                       'written': result['written'], 'skippedThin': result['skipped'],
-                       'truncated': truncated})
+                       'fetchFailed': fetch['failed'], 'written': result['written'],
+                       'skippedThin': result['skipped'], 'truncated': truncated})
     conn.close()
 
     total_written = sum(r['written'] for r in report)
