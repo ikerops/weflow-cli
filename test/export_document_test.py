@@ -140,7 +140,7 @@ class WriteDocumentAssetTests(unittest.TestCase):
             record = manifest['messages']['1:1700000000']
             self.assertEqual(record['kind'], 'file')
             self.assertEqual(record['name'], '园区五一假期温馨提示.pdf')
-            self.assertEqual(manifest['documents'], {'exported': 1, 'copied': 1, 'unavailable': 0})
+            self.assertEqual(manifest['documents'], {'written': 1, 'copied': 1, 'unavailable': 0})
 
             md = Path(md_path).read_text(encoding='utf-8')
             # 文档要写成**链接**：`![](…)` 会被编辑器当成坏图
@@ -158,14 +158,14 @@ class WriteDocumentAssetTests(unittest.TestCase):
                      document_message(2, 2, info, path=None)]
             _md, _total, _new, assets_name = eh.write_markdown(tmp, '会话', items)
             manifest = json.loads((Path(tmp) / assets_name / 'manifest.json').read_text(encoding='utf-8'))
-            self.assertEqual(manifest['documents'], {'exported': 0, 'copied': 0, 'unavailable': 2})
+            self.assertEqual(manifest['documents'], {'written': 0, 'copied': 0, 'unavailable': 2})
             self.assertFalse((Path(tmp) / assets_name / 'files').exists(), '没拷成就不该建目录')
 
     def test_second_run_still_reports_the_documents_it_did_not_have_to_copy(self):
         """同一个输出目录跑第二遍时新拷贝是 0，但文档**都在**。
 
         2026-10-13 真机踩到：`export … txt --media` 第二次跑打印「0 document(s)」，而 67 份文档就躺在
-        assets 里 —— 只数"新拷贝"就会给自己制造"什么都没导出"的假象。`exported` 与 `written` 要分开。
+        assets 里 —— 只数"新拷贝"就会给自己制造"什么都没导出"的假象。`written`（在 assets 里）与 `copied`（这轮新拷）要分开。
         """
         with tempfile.TemporaryDirectory() as tmp:
             source = os.path.join(tmp, 'src')
@@ -176,9 +176,9 @@ class WriteDocumentAssetTests(unittest.TestCase):
             item = document_message(1, 5, info, path=body)
 
             eh.write_assets(tmp, '会话', [item])
-            self.assertEqual((eh.FILE_ASSET_STATE['exported'], eh.FILE_ASSET_STATE['written']), (1, 1))
+            self.assertEqual((eh.FILE_ASSET_STATE['written'], eh.FILE_ASSET_STATE['copied']), (1, 1))
             _n, _mf, _new = eh.write_assets(tmp, '会话', [item])
-            self.assertEqual((eh.FILE_ASSET_STATE['exported'], eh.FILE_ASSET_STATE['written']), (1, 0),
+            self.assertEqual((eh.FILE_ASSET_STATE['written'], eh.FILE_ASSET_STATE['copied']), (1, 0),
                              '第二遍没有新拷贝，但"这份文档在不在"必须还是 1')
 
     def test_link_target_is_encoded_so_parentheses_and_spaces_cannot_break_it(self):
@@ -302,8 +302,52 @@ class WriteDocumentAssetTests(unittest.TestCase):
             self.assertIn('1:100', manifest, '窄窗口那次不该把宽窗口的条目删掉')
             self.assertIn('2:200', manifest)
             on_disk = json.loads((Path(tmp) / '会话_assets' / 'manifest.json').read_text(encoding='utf-8'))
-            self.assertEqual(on_disk['documents']['exported'], 2)
+            self.assertEqual(on_disk['documents']['written'], 2)
             self.assertEqual(on_disk['documents']['copied'], 1, '这一轮只新拷了 1 个')
+
+    def test_拷贝失败时报告说找到而清单说没落盘(self):
+        """两份产物答的是**两个不同的问题**，拷贝失败时它们必须各自说真话。
+
+        报告答"源数据里有没有这份文件"（`found`）；清单答"写进导出目录没有"（`written`/`unavailable`）。
+        此前两处都叫 `exported`，于是"找到但拷贝失败"会被读成"已导出"——那是假的。
+        """
+        info = {'title': '方案.docx', 'ext': 'docx', 'bytes': 8, 'md5': 'a' * 32}
+        record = eh.build_media_record(49, None, {}, 7, 1700000000, '', [], '', True, info, '/anywhere/方案.docx')
+        self.assertEqual(record['status'], 'found')
+        self.assertEqual(record['kind'], 'file')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'src')
+            os.makedirs(src)
+            body = os.path.join(src, '方案.docx')
+            Path(body).write_bytes(b'PK\x03\x04fake')
+            assets = Path(tmp) / '会话_assets'
+            assets.mkdir(parents=True)
+            # 让拷贝注定失败：`files/` 那个位置先占一个**文件**
+            (assets / 'files').write_text('我不是目录', encoding='utf-8')
+
+            eh.write_markdown(tmp, '会话', [document_message(1, 1700000000, info, path=body)])
+            manifest = json.loads((assets / 'manifest.json').read_text(encoding='utf-8'))
+            self.assertNotIn('1:1700000000', manifest['messages'], '拷贝失败的条目不该进清单')
+            self.assertEqual(manifest['documents'], {'written': 0, 'copied': 0, 'unavailable': 1},
+                             '没落盘就要算 unavailable，不许算成"已导出"')
+
+    def test_机器可读摘要给出各状态计数与报告文件名(self):
+        """三种导出的 JSON 共用这一份摘要：词汇一致，报告文件名在里面，且**不带路径**。"""
+        items = [{'status': 'embedded'}, {'status': 'embedded'}, {'status': 'found'}, {'status': 'missing'}]
+        before = dict(eh.FILE_ASSET_STATE)
+        eh.FILE_ASSET_STATE.update({'written': 3, 'copied': 1, 'unavailable': 1})
+        try:
+            summary = eh.media_json_summary(items, r'C:\out\会话_media.json', {'a': 1, 'b': 2}, 2, '会话_assets')
+        finally:
+            eh.FILE_ASSET_STATE.clear()
+            eh.FILE_ASSET_STATE.update(before)
+        self.assertEqual(summary['report'], '会话_media.json')
+        self.assertEqual(summary['reportItems'], 4)
+        self.assertEqual(summary['reportStatus'], {'embedded': 2, 'found': 1, 'missing': 1})
+        self.assertEqual(summary['assets'], {'items': 2, 'new': 2, 'dir': '会话_assets'})
+        self.assertEqual(summary['documents'], {'written': 3, 'copied': 1, 'unavailable': 1})
+        self.assertNotIn(r'C:\out', json.dumps(summary, ensure_ascii=False), '摘要里不许出现本机绝对路径')
 
     def test_two_documents_with_the_same_name_do_not_overwrite_each_other(self):
         with tempfile.TemporaryDirectory() as tmp:

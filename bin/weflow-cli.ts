@@ -14,6 +14,7 @@ import { configService } from '../src/services/configService.js'
 import { chatService } from '../src/services/chatService.js'
 import { emptyMessagesNote, looksLikeTalkerId } from '../src/services/messageQuery.js'
 import { exportService } from '../src/services/exportService.js'
+import type { ExportResult } from '../src/services/exportService.js'
 import { writeEvidencePackage } from '../src/services/evidenceService.js'
 import { resolveTalker as resolveTalkerCore } from '../src/utils/talkerUtils.js'
 import { getPythonCommand } from '../src/utils/python.js'
@@ -1874,8 +1875,12 @@ program
     }
     // 图片要靠 Python 那条路匹配（缓存缩略图、资源 md5、原图那档）。`--media` 就是"先抽一次"，
     // 抽完 json/txt/excel 各自消费同一份清单 —— 匹配只跑一遍，也不会在 TS 里重写一遍。
+    // 抽取那一步的媒体摘要留在这里：`--media` 的调用者（机器调用）应当能从结果里直接读到
+    // "各状态多少条、报告叫什么"，而不必去翻 Python 的 stdout。
+    let extracted: ExportResult | undefined
     if (opts.media && (format === 'json' || format === 'txt' || format === 'excel')) {
       const media = await exportService.extractMedia(talker, opts.output, !!opts.json, { fullImages: opts.fullImages === true }, limit, opts.date || '')
+      extracted = media
       if (!media.success) {
         if (opts.json) console.log(JSON.stringify({ success: false, code: 'MEDIA_EXPORT_FAILED', error: media.error || '媒体抽取失败' }))
         else console.log(chalk.red(`✗ 媒体抽取失败: ${media.error}`))
@@ -1909,7 +1914,16 @@ program
     }
 
     if (result?.success) {
-      if (opts.json) console.log(JSON.stringify({ success: true, format, contract: format === 'json' ? opts.contract : null, path: result.path, count: result.count ?? null }, null, 2))
+      if (opts.json) console.log(JSON.stringify({
+        success: true,
+        format,
+        contract: format === 'json' ? opts.contract : null,
+        path: result.path,
+        count: result.count ?? null,
+        // 媒体摘要：html/md 那条由导出自己产出（Python 的 media_json_summary），
+        // json/txt/excel 的 `--media` 则由上面那次抽取产出 —— 两条都是同一份词汇。
+        media: result.media ?? extracted?.media ?? null,
+      }, null, 2))
       else console.log(chalk.green(`✓ 导出成功: ${result.path}`))
     } else {
       if (opts.json) console.log(JSON.stringify({ success: false, code: 'EXPORT_FAILED', error: result?.error || '导出失败' }))

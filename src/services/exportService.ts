@@ -12,7 +12,19 @@ import { parseLocalDateOrIso } from '../utils/dateRange.js'
 import { resolvePackageRoot } from '../utils/packageRoot.js'
 
 export type ExportContract = 'raw' | 'weflow-v1'
-export interface ExportResult { success: boolean; path?: string; count?: number; error?: string }
+export interface ExportResult {
+  success: boolean
+  path?: string
+  count?: number
+  error?: string
+  /**
+   * 抽取那一步给出的媒体摘要（状态计数、报告文件名、assets 目录）。
+   *
+   * 由 Python 侧**唯一那个** `media_json_summary` 生成，所以 html / md / `--media` 三种形态的词汇一致；
+   * 这里只做透传（`--json` 调用的结果里带上它），不在 TS 里重算一遍——两份实现必然漂移。
+   */
+  media?: unknown
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -265,7 +277,7 @@ export class ExportService {
           const result = JSON.parse(lines[i])
           if (result.success && result.files?.length > 0) {
             const total = Number(result.total)
-            return { success: true, path: result.files[0], count: Number.isFinite(total) ? total : undefined }
+            return { success: true, path: result.files[0], count: Number.isFinite(total) ? total : undefined, media: result.media }
           }
         } catch {}
       }

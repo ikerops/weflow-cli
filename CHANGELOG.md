@@ -17,6 +17,21 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **One word per question, across every artifact that describes exported media.** The auxiliary `*_media.json`
+  called a document entry `exported` when it meant "the local copy was **found**", while `manifest.json` used
+  `exported` for "it is **in the assets directory**" - two different questions wearing one word, and a copy
+  failure would have made "已导出" false. Now: the report answers *locatable in the source data* (`found` /
+  `missing`), the manifest answers *materialized in the export directory* (`written` = what is there now,
+  `copied` = what this run added, `unavailable` = not written, whether because the file is absent, oversized,
+  or the copy itself failed). `manifest.documents` gained the clearer `written` (it was `exported`) and the
+  CLI's JSON for all three branches (html / md / `--media`) is now produced by **one** function
+  (`media_json_summary`) instead of three hand-written blocks - so the formats cannot describe the same fact
+  differently, and the summary carries the report's file name everywhere (previously only the HTML branch did).
+  Pinned by tests: a file whose copy fails reports `found` in the report and `unavailable` in the manifest
+  (never "exported"), and the summary is asserted to carry counts, the report name, and **no absolute path**.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**

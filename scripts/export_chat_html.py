@@ -111,10 +111,13 @@ _FILE_ASSET_SUBDIR = 'files'
 # 文档那半的计数（图片那半的计数在写盘时现算）。放在模块级是为了不改 `write_assets` 的返回形状 ——
 # 它已经有两个调用方（markdown 导出与 `--media`），与 COVER_STATE/VOICE_STATE 是同一套写法。
 #
-# `exported` 与 `written` 是两件事：`written` 只数**这次新拷**的，`exported` 数"这条消息的文档确实在
-# assets 里"。分开是因为第二次跑同一个目录时新拷贝是 0 —— 只报 `written` 会打印成"0 document(s)"，
-# 而实际上 67 份都在，那是给自己制造假象（2026-10-13 真的这么打印过一次）。
-FILE_ASSET_STATE = {'exported': 0, 'written': 0, 'unavailable': 0}
+# **三个词各管一件事，别混**（媒体状态统一后，报告/清单/JSON 三处都按这套说法）：
+#   `written`     = 现在躺在导出目录里的份数（"可用数"，同一目录跑第二遍时它不为 0）
+#   `copied`      = **这一轮**新拷进去的份数（第二遍跑就是 0）
+#   `unavailable` = 没能落盘的份数（本地没有那份文件 / 太大 / 拷贝失败）
+# 分开是因为只报 `copied` 会把第二遍打印成"0 document(s)"，而实际上 67 份都在 —— 那是给自己制造
+# 假象（2026-10-13 真这么打印过一次）。
+FILE_ASSET_STATE = {'written': 0, 'copied': 0, 'unavailable': 0}
 
 # Off by default: full-resolution originals are 5-24MB / 3000-5700px each, and
 # downscaling ~500 of them costs minutes (PIL decode dominates). The cache's
@@ -2145,10 +2148,15 @@ def build_media_record(local_type, image_b64, image_map, local_id, create_time,
     if file_info is not None:
         # 文档本体（appmsg type 6）走的是另一条路：没有缩略图、也不在图片索引里，能不能导出只看
         # 本地 `msg/file/` 有没有那份文件。不并入图片那条链，否则报告会把"文件没下载"写成"没有可靠标识"。
+        #
+        # 状态词是 `found` 而**不是** `exported`：这份报告是在**写 assets 之前**生成的，它答的是
+        # "能不能在源数据里定位到"（`found` / `missing`），答不了"有没有写进导出目录"。
+        # 后者由清单的 `documents.written` 回答（`write_assets` 写的）。两件事用两个词，
+        # 免得"这份文件已导出"这种话在拷贝失败时变成假的。
         record['kind'] = 'file'
         record['bytes'] = file_info.get('bytes') or None
         if file_hit:
-            record['status'] = 'exported'
+            record['status'] = 'found'
             record['mediaKey'] = 'file'
         else:
             record['status'] = 'missing'
@@ -2609,15 +2617,15 @@ def write_assets(out_dir, file_prefix, formatted, assets_dir=''):
             'bytes': size,
         }
 
-    # `exported` 数的是**合并后清单里真实存在的文档条目**（第二遍跑同一目录时它不为 0，而新拷贝是 0）；
+    # `written` 数的是**合并后清单里真实存在的文档条目**（第二遍跑同一目录时它不为 0，而新拷贝是 0）；
     # `copied` 才是"这次新拷了几个"。两个都写出来，免得读清单的人把后者当前者。
-    file_exported = sum(1 for record in manifest.values() if record.get('kind') == 'file')
-    FILE_ASSET_STATE['exported'] = file_exported
-    FILE_ASSET_STATE['written'] = file_written
+    file_written_total = sum(1 for record in manifest.values() if record.get('kind') == 'file')
+    FILE_ASSET_STATE['written'] = file_written_total
+    FILE_ASSET_STATE['copied'] = file_written
     FILE_ASSET_STATE['unavailable'] = file_unavailable
     with open(manifest_path, 'w', encoding='utf-8') as fh:
         json.dump({'schema': 'weflow-media-manifest/v2', 'messages': manifest,
-                   'documents': {'exported': file_exported, 'copied': file_written,
+                   'documents': {'written': file_written_total, 'copied': file_written,
                                  'unavailable': file_unavailable}},
                   fh, ensure_ascii=False, indent=2)
     return os.path.basename(os.path.normpath(assets)), manifest, written + file_written
@@ -2639,6 +2647,35 @@ def _markdown_link_target(rel):
         else:
             out.append(ch)
     return ''.join(out)
+
+
+def media_json_summary(media_items, media_report_path=None, manifest=None, asset_new=0, assets_dir=''):
+    """命令行最后那行 JSON 里的媒体摘要 —— **三种格式共用同一份词汇与同一份计数逻辑**。
+
+    每个词只回答一个问题，互不覆盖：
+
+    * `reportStatus`：按**能不能在源数据里定位到**分类（图片是 `embedded`/`remote-fetched`/`missing`，
+      文档是 `found`/`missing`）。这是"这份媒体在源数据里有没有"。
+    * `assets.written / copied`：**有没有写进导出目录**（written 是现在那里的总数，copied 是这一轮新写的）。
+      与上一条是两回事：源数据里找得到的，可能因为太大或拷贝失败而没写进去。
+    * `documents.unavailable`：没能落盘的份数（没找到 / 太大 / 拷贝失败）。
+
+    三处原本各拼一份 JSON（还各写了不同的键名），同一个事实就有三种说法；这里收成一份，
+    顺带把**报告文件名**一起给出来（此前只有 HTML 那条给）。不含路径、正文或密钥。
+    """
+    counts = {}
+    for item in media_items or []:
+        status = item.get('status') or 'unknown'
+        counts[status] = counts.get(status, 0) + 1
+    return {
+        'report': os.path.basename(media_report_path) if media_report_path else None,
+        'reportItems': len(media_items or []),
+        'reportStatus': counts,
+        'assets': {'items': len(manifest or {}), 'new': asset_new, 'dir': assets_dir or None},
+        'documents': {'written': FILE_ASSET_STATE['written'],
+                      'copied': FILE_ASSET_STATE['copied'],
+                      'unavailable': FILE_ASSET_STATE['unavailable']},
+    }
 
 
 def write_markdown(out_dir, file_prefix, formatted, assets_dir=''):
@@ -2917,35 +2954,39 @@ def main():
     if args.assets_only:
         # 只抽媒体：其它格式的 `--media` 会先跑这一步，再各自消费清单。
         assets_name, manifest, asset_new = write_assets(args.out, file_prefix, formatted, args.assets_dir)
-        print(f"Assets: {len(manifest)} media item(s), {FILE_ASSET_STATE['exported']} document(s) "
-              f"({FILE_ASSET_STATE['unavailable']} unavailable, {FILE_ASSET_STATE['written']} new) "
+        # 这一步也写媒体报告：三种形态的调用方应当拿到同一份东西（状态计数 + 报告文件名），
+        # 少写这一份的话，`--media` 的调用者只能看到文档计数、看不到"哪些媒体没嵌上、为什么"。
+        media_report_path = None
+        if media_items:
+            media_report_path = os.path.join(args.out, f'{file_prefix}_media.json')
+            with open(media_report_path, 'w', encoding='utf-8') as handle:
+                json.dump(build_media_report(media_items, display_name, args.talker, len(formatted)),
+                          handle, ensure_ascii=False, indent=2)
+        print(f"Assets: {len(manifest)} media item(s), {FILE_ASSET_STATE['written']} document(s) "
+              f"({FILE_ASSET_STATE['unavailable']} unavailable, {FILE_ASSET_STATE['copied']} new) "
               f"({asset_new} new) -> {assets_name}")
         print(json.dumps({"success": True, "total": len(formatted),
                           "files": [os.path.join(args.out, assets_name)], "format": "assets",
-                          "assets": len(manifest), "assetsNew": asset_new,
-                          "documents": FILE_ASSET_STATE['exported'],
-                          "documentsNew": FILE_ASSET_STATE['written'],
-                          "documentsUnavailable": FILE_ASSET_STATE['unavailable'],
-                          "assetsDir": assets_name}, ensure_ascii=False))
+                          "media": media_json_summary(media_items, media_report_path, manifest,
+                                                      asset_new, assets_name)},
+                         ensure_ascii=False))
         conn.close()
         return
     if args.format == 'md':
         md_path, asset_total, asset_new, assets_name = write_markdown(args.out, file_prefix, formatted, args.assets_dir)
+        media_report_path = None      # 没有媒体时下面那段不跑，但 JSON 里仍要如实给出 None
         if media_items:
             media_report_path = os.path.join(args.out, f'{file_prefix}_media.json')
             with open(media_report_path, 'w', encoding='utf-8') as handle:
                 json.dump(build_media_report(media_items, display_name, args.talker, len(formatted)),
                           handle, ensure_ascii=False, indent=2)
         print(f"Markdown: {len(formatted)} message(s), {asset_total} media item(s), "
-              f"{FILE_ASSET_STATE['exported']} document(s) ({FILE_ASSET_STATE['unavailable']} unavailable, "
-              f"{FILE_ASSET_STATE['written']} new) ({asset_new} new) -> {os.path.basename(md_path)}")
+              f"{FILE_ASSET_STATE['written']} document(s) ({FILE_ASSET_STATE['unavailable']} unavailable, "
+              f"{FILE_ASSET_STATE['copied']} new) ({asset_new} new) -> {os.path.basename(md_path)}")
         print(json.dumps({"success": True, "total": len(formatted), "parts": 1,
                           "files": [md_path], "format": "md",
-                          "assets": asset_total, "assetsNew": asset_new,
-                          "documents": FILE_ASSET_STATE['exported'],
-                          "documentsNew": FILE_ASSET_STATE['written'],
-                          "documentsUnavailable": FILE_ASSET_STATE['unavailable'],
-                          "assetsDir": assets_name},
+                          "media": media_json_summary(media_items, media_report_path, manifest=None,
+                                                      asset_new=asset_new, assets_dir=assets_name)},
                          ensure_ascii=False))
         conn.close()
         return
@@ -2995,17 +3036,13 @@ def main():
     # Print JSON summary for CLI integration.
     # The four original keys are untouched; `media` is purely additive and the
     # one existing consumer (src/services/exportService.ts) ignores it.
+    # 三种格式（html/md/assets）用**同一个** media_json_summary，词汇与计数不再各说各话。
     print(json.dumps({
         "success": True,
         "total": total,
         "parts": len(html_files),
         "files": html_files,
-        "media": ({
-            "schema": "weflow-media-report/v1",
-            "records": len(media_items),
-            "status": media_report['counts'],
-            "report": os.path.basename(media_report_path) if media_report_path else None,
-        } if media_report else None),
+        "media": media_json_summary(media_items, media_report_path),
     }))
 
 
