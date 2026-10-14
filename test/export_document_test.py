@@ -333,12 +333,18 @@ class WriteDocumentAssetTests(unittest.TestCase):
                              '没落盘就要算 unavailable，不许算成"已导出"')
 
     def test_机器可读摘要给出各状态计数与报告文件名(self):
-        """三种导出的 JSON 共用这一份摘要：词汇一致，报告文件名在里面，且**不带路径**。"""
+        """三种导出的 JSON 共用这一份摘要：词汇一致，报告文件名在里面，且**不带目录**。
+
+        ⚠️ 目录用 `os.path.join` 拼，**不能写死 `C:\\out`**：CI 跑在 Linux 上，那里 `os.path.basename`
+        不把反斜杠当分隔符，会整串返回 —— 夹具的错看起来跟"被测代码坏了"一模一样（2026-10-14 就这么红过一次）。
+        """
+        fake_dir = 'C:\\out' if os.name == 'nt' else '/out'
         items = [{'status': 'embedded'}, {'status': 'embedded'}, {'status': 'found'}, {'status': 'missing'}]
         before = dict(eh.FILE_ASSET_STATE)
         eh.FILE_ASSET_STATE.update({'written': 3, 'copied': 1, 'unavailable': 1})
         try:
-            summary = eh.media_json_summary(items, r'C:\out\会话_media.json', {'a': 1, 'b': 2}, 2, '会话_assets')
+            summary = eh.media_json_summary(items, os.path.join(fake_dir, '会话_media.json'),
+                                            {'a': 1, 'b': 2}, 2, '会话_assets')
         finally:
             eh.FILE_ASSET_STATE.clear()
             eh.FILE_ASSET_STATE.update(before)
@@ -347,7 +353,7 @@ class WriteDocumentAssetTests(unittest.TestCase):
         self.assertEqual(summary['reportStatus'], {'embedded': 2, 'found': 1, 'missing': 1})
         self.assertEqual(summary['assets'], {'items': 2, 'new': 2, 'dir': '会话_assets'})
         self.assertEqual(summary['documents'], {'written': 3, 'copied': 1, 'unavailable': 1})
-        self.assertNotIn(r'C:\out', json.dumps(summary, ensure_ascii=False), '摘要里不许出现本机绝对路径')
+        self.assertNotIn(fake_dir, json.dumps(summary, ensure_ascii=False), '摘要里不许出现本机目录')
 
     def test_two_documents_with_the_same_name_do_not_overwrite_each_other(self):
         with tempfile.TemporaryDirectory() as tmp:
