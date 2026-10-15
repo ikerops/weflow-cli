@@ -36,7 +36,7 @@ WeFlow CLI is a local-first command-line tool and MCP server for user-authorized
 | Knowledge workflows | Wiki compilation (`compile_wiki` aggregates `[[concept]]` links into Vault pages; **the article corpus produced none as of 2026-09-26** (the 1,633 article notes then in the Vault carried only their own topic link and `## 关联网络` path links, measured over the whole corpus), so an article-side concept-extraction step was missing; `article-notes` (added the same day) is that step, and it works: 30 article notes produced 110 concepts and 10 concept pages on this machine, which are now the first knowledge pages the assistant can search (`vault search`, `search_knowledge`). The corpus has grown since - 7,119 concept cards, and 22,374 concept pages across both lines as of 2026-09-28. The degeneracy reported in that trial was an artefact of a 120-card sample: with all 710 September articles carded, the topic field splits into 学术/新闻/政治 (62/33/25 of 108 pages), so the earlier "the classifier puts everything in one bucket" judgement is withdrawn. Two upstream noise sources showed up in that trial. The first - WeChat reader UI text inside article summaries - is **fixed**, and the backfill this line used to defer has since been run: measured over the corpus it was 1,484 of 1,633 notes (the corpus has grown to 34,092 since), the cleaner runs on both write paths, and `create_reading_notes --clean-summaries` took the existing notes to **0**; the Vault's `Sources/WeChat` copies were cleaned on 2026-09-28 as well (D-055), so the residue now survives only in `output/biz-daily`, which is the archive. The second is **measured but not fixed**: of 224 notes whose titles read as news, 40 are labelled `学术` - that classifier belongs to the daily pipeline and changing its criteria without labels would be a guess. Fed by both sources: `output/biz-daily` articles and, since 2026-09-26, `output/chat-notes` conversation cards produced by the confirmed `chat-notes` command - which, since 2026-10-01, carries voice messages as **text** rather than a bare `[语音]`: it reads the local faster-whisper transcript cache (content-addressed, `output/.voice-cache` - one definition, in `wechat_voice`) and labels each one `[语音·本机转写·未校对]`, because a machine transcript of someone's speech may be wrong and the model must not quote it as fact. Measured on the 30-day window: **54 of 125** voice messages carry text that used to be a placeholder; the ones still missing are counted and printed, and `--transcribe-voice` fills them locally (the cache is the progress, so an interrupted run resumes); **the graph is also kept free of duplicate nodes by `wiki compile --merge-duplicates`** (74 groups merged, 80 pages removed, and 98 links that pointed at the removed names still resolve through `aliases` - see D-053); **most of the article line's pages were never written by a model** - `wiki compile --pages-from-cards` assembles a page from material the cards already carry (the definition is the card's own `desc`, the related concepts are the other concepts from the same article, the source is that article) and marks it `summary_by: card`. That label is deliberate and is not the same as "no model was involved": the `desc` line was written by `article_notes`, so the quality is that line's quality, and a few read as meta-descriptions of where the term appeared rather than as definitions. 17,383 pages at ¥0; the model-based route was priced at ¥31 and rejected, because every one of those concepts is mentioned by exactly one article (D-054); **the pages accumulate only if `wiki compile --refresh-sources` is run** - `wiki compile` itself only builds pages for concepts that do not have one, so an existing page never gains an edge (measured: one run added 3,164 edges across 324 article-line pages; on 2026-10-01, after the whole
 pre-2026-03-03 window had been carded, another run added **8,551** edges across **3,506** pages - verified against a
 snapshot of all 48,426 pages: the file count changed, the frontmatter that changed is **0**, and the files that lost
-a source line are **0**, so the rewrite is what it claims to be, additive; it rewrites the body only, never the frontmatter, and never deletes a source line no current card accounts for - see D-052), semantic search (two-stage: similarity, then a decision-model rerank over the top 20 candidates; `--no-rerank` reverts) - the index covers 90 days of chat and 30 date-directories of articles **by default**, and `search-index --days / --article-days` changes that (the numbers were hardcoded at the call sites until 2026-09-25, and neither the command nor its preview said so), RAG, WeRead sync, reviews, reading notes, and staged Vault promotion. The article line was extended on 2026-10-01 with the **whole**
+a source line are **0**, so the rewrite is what it claims to be, additive; it rewrites the body only, never the frontmatter, and never deletes a source line no current card accounts for - see D-052), semantic search (two-stage: similarity, then a decision-model rerank over the top 20 candidates; `--no-rerank` reverts) - the index covers 90 days of chat and 30 date-directories of articles **by default**, and `search-index --days / --article-days` changes that (the numbers were hardcoded at the call sites until 2026-09-25, and neither the command nor its preview said so; a **local BM25 + vector fusion** exists as an opt-in (`search --hybrid`, default off because the A/B measured it as not better on realistic questions - D-110), an index was then built on this machine on 2026-10-15: 16,027 records (10,759 articles + 5,268 chat messages) out of ~5.87M characters, ≈¥2 at list price), RAG, WeRead sync, reviews, reading notes, and staged Vault promotion. The article line was extended on 2026-10-01 with the **whole**
 pre-2026-03-03 backlog, not only its AI part: **8,754** articles over 157 days (1,702 AI + 7,052 others, of which
 2,709 needed fetching), **8,670** reading notes (free and local - 94 fewer than the index because a note file is named
 `<date>-<title>` and one title republished by two accounts the same day makes a single file; measured per day, that
@@ -93,7 +93,7 @@ mistook a **missing mechanism** for a **tool that cannot be tested**: the harnes
 `assistantPrivacy` per case all along, it just had not generalised it. With a general `config` override
 (`weread-notebooks`, asserting the book title really reaches the answer, because reading `b.title` off the
 notebooks response yields `undefined` while the output still looks fine), what genuinely remains uncovered is
-**one** tool: `search_semantic` (needs `dashscopeApiKey` **and** a built index - neither exists on this machine). That
+**one** tool: `search_semantic` (it needs `dashscopeApiKey` **and** a built index; as of 2026-10-15 this machine has both - the index holds 16,027 records - so it stays uncovered for a different reason: its query vector is a **second egress**, and the harness admits only the model call). That
 list is no longer prose that can rot: it is the `EVAL_UNCOVERED` map, and `test/assistant-eval.test.ts` asserts both
 directions - every tool is either claimed by some case's assertions or registered there with a reason, and no
 registered name has stopped existing - so adding a tool means writing a case or writing a reason, and skipping both
@@ -375,10 +375,43 @@ line too (D-105): `search`, `chat`, `vault search`, `vault rag` and the assistan
 `search_knowledge` all take `line: wiki|chat|all`, default to the article line where the user sees it (the
 *functions* default to `all` so a caller that forgets cannot silently halve the search), and every output says which
 line it searched. The semantic side carries this as a mask applied **before** the top-k sort over one shared index.
-**Limitation to keep in view**: the vector path of semantic search has never run against a real index on this
-machine - the index does not exist (building it needs `dashscopeApiKey` and spends the user's embedding credit), so
-the mask is pinned against a hand-made fixture index and the real-data check was done on the keyword fallback (which
-is the path this machine actually takes). Two things about this were
+**Limitation, updated 2026-10-15**: the vector path now runs against a **real** index on this machine (the user
+supplied a `dashscopeApiKey`; the index holds 16,027 records - 10,759 articles + 5,268 chat messages - and real
+searches were run through the CLI). What the measurement changed is the *shape* of the limit: no longer "never
+exercised", but "the article line ranks weakly" - raw cosine only, because rerank is blocked here (Typesafe returns
+`HTTP 451: not available in your region`), scores clustering inside 0.49-0.58 and **not comparable across queries**
+(0.58 on one query need not mean "closer" than 0.50 on another), and a compound query losing its rarer half
+("卫星遥感反演气溶胶光学厚度" returned 气溶胶 papers first and 遥感 at rank 4). **The cause was found the same
+day, and it was not the truncation**: none of the 10,759 daily `.md` files in that window contains `## 正文`, so
+every article fell back to `content[:1000]` and only YAML metadata was embedded (sampled 300: 100% contain
+`title:`, median CJK ratio 0.16). The extractor now reads the real structure instead (0.16 → 0.80 median CJK
+ratio, 299/300 files) with a test that fails if it is reverted; **the index needs a `--full` rebuild to pick that
+up**, because an incremental build embeds new ids only (see D-109). Cost was measured the same day: the build shipped ~5.87M characters (~¥2
+estimated), one query ~12 tokens. The mask itself is still pinned against a hand-made fixture index, since a fixture
+**A recall baseline now exists (measured 2026-10-15, index of 15,995 records), so the next change has something to
+be compared against.** Three batteries, all with a known correct answer: (a) 80 auto queries built from a record's
+own text - 12-character verbatim fragments recall@10 = **13/20** on the article line and **12/20** on chat; titles /
+first-30-characters recall@10 = **20/20** on the article line and 16/20 on chat; (b) 10 hand-written questions, each
+with a literal "the answer must contain this" anchor: **10/10 present in the index**, first anchor-bearing record at
+rank 1 for **9/10** (the miss sat at rank 14); (c) a plumbing self-check that returns the stored text to rank 1
+16/16. The split matters: **title-like lookups are near-perfect, verbatim-fragment lookups are not** (median rank
+5-6), which is the price of one vector per record with the first ~500 characters embedded. Two readings that are
+easy to get wrong: **coverage is not recall** (the article line is the last 30 date directories, 2026-09-12..10-13,
+chat is 90 days, so a miss outside that window is a coverage gap), and **"how many records contain the anchor" is not
+precision** - one of the ten anchors was satisfied by a "recommended reading" footer on an unrelated article.
+
+**Per-account lookup needed an attribute filter, not vectors (same day).** The window holds 10,759 articles from
+**413 accounts** (largest: one tabloid with 908, then 632 and 529 - the top three alone are ~19% of the window, and
+they are general news, not air quality). Searching an account's name returns only 0-3 of the top 10 from that account,
+because the name lives in the record's `id` (files are named `<account>-<title>.md`) and not in the embedded text -
+the frontmatter's `source:` left the embedded text when the article body extraction was fixed. `search --from <name>`
+now filters on that id (substring; article line only, since a chat message has no source account) and says so when an
+account has no records instead of returning nothing. Verified on the live index: without the filter, `暗访` returns
+0 of 5 from the tabloid; with `--from 红星新闻`, 5 of 5 are its own. It hands back the right **pool**, not a better
+order inside it - ranking within a general-news account is still nearest-neighbour, so a topical query can return
+that account's unrelated stories.
+
+is what a unit test can hold. Two things about this were
 wrong on 2026-09-27 and are now fixed: the concept directory was **declared in two places** (`VAULT_DIRS` said
 `007_Wiki/Concepts`, every writer and reader used the top-level `Wiki/Concepts`), so `007_Wiki/` was created and
 never filled; and the historical import skipped `Sources/` entirely (it would have carried ~33 GB of images), which

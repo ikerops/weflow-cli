@@ -21,7 +21,7 @@
 输出: JSON 格式（`search` 这一支是一个对象：`line` / `results` / `indexCounts` / 有时 `note`）
 """
 
-import sys, os, json, hashlib, re, argparse
+import sys, os, json, math, hashlib, re, argparse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -71,6 +71,9 @@ VECTORS_FILE = INDEX_DIR / 'vectors.npy'
 META_FILE = INDEX_DIR / 'meta.json'
 EMBEDDING_DIM = 1024  # 阿里云 text-embedding-v4
 BATCH_SIZE = 10  # 阿里云 text-embedding-v4 单次最多 10 条
+# 每多少批往盘上落一次。实测全量重建要跑二十分钟以上，而 CLI 给子进程的超时只有五分钟
+# （`search-index` 那条命令），"攒到最后才写"等于"超时/被杀就全丢"。
+CHECKPOINT_BATCHES = 100
 TZ = timezone(timedelta(hours=8))
 
 # 两条知识库线在**索引里**的 `type` 值。索引是一份，这是**故意的**：两条线在同一次嵌入里
@@ -113,8 +116,13 @@ def json_output(data):
 
 # ====== Embedding API ======
 
-def get_embeddings(texts: list[str], api_key: str) -> list[list[float]]:
-    """Call 阿里云百炼 embedding API (OpenAI-compatible)."""
+def get_embeddings(texts: list[str], api_key: str, on_batch=None) -> list[list[float]]:
+    """Call 阿里云百炼 embedding API (OpenAI-compatible).
+
+    `on_batch(done, total, batch_embeddings)` 每批调一次（可选）。建索引靠它**边嵌边落盘**：
+    真实窗口上这个调用要跑二十分钟以上，而 CLI 给子进程的超时只有五分钟 —— "攒到最后才写"
+    意味着超时或被杀就是"这一次花的钱和时间全丢，重跑还得再付一次"。检索那条路不传它。
+    """
     if not texts:
         return []
 
@@ -143,6 +151,8 @@ def get_embeddings(texts: list[str], api_key: str) -> list[list[float]]:
                 result = json.loads(resp.read().decode('utf-8'))
                 embeddings = [item['embedding'] for item in result['data']]
                 all_embeddings.extend(embeddings)
+                if on_batch:
+                    on_batch(len(all_embeddings), len(texts), embeddings)
         except Exception as e:
             err_body = ''
             if hasattr(e, 'read'):
@@ -150,6 +160,8 @@ def get_embeddings(texts: list[str], api_key: str) -> list[list[float]]:
                 except: pass
             print(f"[WARN] Embedding API batch {i//BATCH_SIZE + 1} 失败: {e} {err_body}", file=sys.stderr)
             all_embeddings.extend([[0.0] * EMBEDDING_DIM for _ in batch])
+            if on_batch:      # 失败也要报进度，否则看起来就是"卡住了"
+                on_batch(len(all_embeddings), len(texts), [[0.0] * EMBEDDING_DIM] * len(batch))
 
     return all_embeddings
 
@@ -256,6 +268,45 @@ def collect_chat_messages(conns, name_map, days=90, per_talker=500):
     return items
 
 
+_ARTICLE_BOILERPLATE = frozenset({
+    '在小说阅读器读本章', '去阅读', '在公众号小说中沉浸阅读',
+})
+
+
+def extract_article_body(content, limit=500):
+    """从日报 md 里取"像正文"的一段 —— **这就是 2026-10-15 修的那个洞**。
+
+    这里原来只有一句 `if line.startswith('## 正文')`，而实测最近 30 个日期目录的 10,759 篇里
+    **没有一篇**含这个标记（真实结构是 `frontmatter → # 标题 → > 来源 → --- → ## AI 摘要 →
+    --- → 重复标题 → 正文`），于是每一篇都退回到 `content[:1000]`：送去 embedding 的是 YAML 头
+    （抽样 300 篇：100% 含 `title:`，汉字占比中位 0.16），正文一个字都没进索引。
+    症状不是报错，而是**文章线的排序只能靠标题** —— 所以它值一个函数加一条测试，而不是再塞一句 if。
+
+    取法：切掉 frontmatter，逐行丢掉标题/引用/图片/分隔线/纯符号行，攒到 limit 为止。
+    `## AI 摘要` 的正文（一句话概括）会被收进来，它对检索有用。
+    """
+    lines = content.split('\n')
+    if lines and lines[0].strip() == '---':
+        for i in range(1, len(lines)):
+            if lines[i].strip() == '---':
+                lines = lines[i + 1:]
+                break
+    kept = []
+    total = 0
+    for raw in lines:
+        s = raw.strip()
+        if len(s) < 6 or s.startswith(('#', '>', '![', '|', 'http', '```')):
+            continue
+        if s in _ARTICLE_BOILERPLATE:
+            continue
+        if not any(c.isalnum() or '一' <= c <= '鿿' for c in s):
+            continue                      # 纯符号行（分隔线、下划线横线）
+        kept.append(s)
+        total += len(s)
+        if total >= limit:
+            break
+    return '\n'.join(kept)[:limit]
+
 def collect_articles(article_days=30):
     """Collect articles from biz-daily.
 
@@ -291,7 +342,10 @@ def collect_articles(article_days=30):
                         if line.startswith('## 正文'):
                             body_start = i + 1
                             break
-                    body = '\n'.join(lines[body_start:body_start + 50]) if body_start else content[:1000]
+                    # 有 `## 正文` 就用它（最精确的标记）；没有就按真实结构取正文，
+                    # 不再退回到 YAML 头 —— 那正是"文章线只能靠标题排"的原因。
+                    body = ('\n'.join(lines[body_start:body_start + 50]) if body_start
+                            else extract_article_body(content))
                     if title:
                         items.append({
                             "id": f"article:{f.relative_to(daily_dir)}",
@@ -308,6 +362,35 @@ def collect_articles(article_days=30):
 
 
 # ====== Index Operations ======
+
+def _save_index(base_vectors, base_meta, pairs):
+    """把「旧索引 + 这一批已经嵌好的」写出去，供中途落盘与收尾共用。
+
+    两处讲究都是实测出来的：
+    · **先写向量、再写 meta，各自"临时文件 + replace"**。两步之间被杀时，宁可 meta 少一条，
+      也不能让它多一条 —— 多出来的那条指向不存在的向量行，检索时 argsort 的下标会越界，
+      而 `search()` 里那个 `except: pass` 会把它变成"静默退回关键词"，那是最难看出来的一种。
+    · 向量**逐行**归一化后再存（原来是整个矩阵一次性归一化）。归一化本来就是逐行的，
+      重复做结果不变，所以中途落盘不会改变最终结果。
+    """
+    np = require_numpy()
+    if pairs:
+        new_vectors = np.array([v for _item, v in pairs], dtype=np.float32)
+    else:
+        new_vectors = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+    vectors = np.vstack([base_vectors, new_vectors]) if base_vectors.size else new_vectors
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    norms[norms == 0] = 1                      # Avoid division by zero
+    vectors = vectors / norms
+    meta = list(base_meta) + [item for item, _v in pairs]
+
+    tmp_v = VECTORS_FILE.with_name(VECTORS_FILE.name + '.tmp.npy')
+    np.save(tmp_v, vectors)
+    os.replace(tmp_v, VECTORS_FILE)
+    tmp_m = META_FILE.with_name(META_FILE.name + '.tmp')
+    tmp_m.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+    os.replace(tmp_m, META_FILE)
+    return len(meta)
 
 def build_index(api_key: str, full: bool = False, days: int = 90, article_days: int = 30):
     """Build or update the semantic index.
@@ -385,41 +468,56 @@ def build_index(api_key: str, full: bool = False, days: int = 90, article_days: 
                 "chatDays": days, "articleDays": article_days,
                 "shardsFailed": shards_failed}
 
-    # Generate embeddings
-    print("生成 embeddings...", file=sys.stderr)
     texts = [item['text'] for item in new_items]
-    embeddings = get_embeddings(texts, api_key)
+    total_new = len(texts)
+    print(f"生成 embeddings...（{total_new} 条，共 {-(-total_new // BATCH_SIZE)} 批）", file=sys.stderr)
 
-    if not embeddings or all(e == [0.0] * EMBEDDING_DIM for e in embeddings):
-        return {"error": "Embedding 生成失败，请检查 API key",
-                "chatDays": days, "articleDays": article_days}
-
-    # Load existing vectors
+    # 旧索引先读进来：增量时它是底，中途落盘与收尾都要以它开头。
     if VECTORS_FILE.exists() and not full:
-        vectors = np.load(VECTORS_FILE)
-        meta = json.loads(META_FILE.read_text(encoding='utf-8'))
+        base_vectors = np.load(VECTORS_FILE)
+        base_meta = json.loads(META_FILE.read_text(encoding='utf-8'))
     else:
-        vectors = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
-        meta = []
+        base_vectors = np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+        base_meta = []
 
-    # Append new vectors
-    new_vectors = np.array(embeddings, dtype=np.float32)
-    vectors = np.vstack([vectors, new_vectors]) if vectors.size else new_vectors
-    meta.extend(new_items)
+    ok_pairs = []          # [(item, vector)] —— 真嵌出来的才配进索引
+    state = {'failed': 0, 'flushed': 0}
 
-    # Normalize vectors for cosine similarity
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    norms[norms == 0] = 1  # Avoid division by zero
-    vectors = vectors / norms
+    def on_batch(done, total, batch_embs):
+        """边嵌边落盘，并且把"全零"那批（请求失败）挑出来**不写**。
 
-    # Save
-    np.save(VECTORS_FILE, vectors)
-    META_FILE.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+        两件事都是实测踩出来的：
+        · 这个索引要跑二十分钟以上，而 CLI 给子进程的超时是五分钟 —— 攒到最后才写就是
+          "超时/被杀等于全丢"；每 CHECKPOINT_BATCHES 批落一次盘，被杀也只丢最后那几千条，
+          而且重跑 `update` 会从断点接着来（已落盘的 id 就在 meta 里）。
+        · 失败批次拿到的是全零向量。照旧写进去的话，那些 id 会永久躺在索引里**再也不会被重嵌**
+          （增量只嵌新 id）—— 索引被安静地投毒。所以它们不写，留到下次重跑。
+        """
+        start = done - len(batch_embs)
+        for k, emb in enumerate(batch_embs):
+            if any(emb):
+                ok_pairs.append((new_items[start + k], emb))
+            else:
+                state['failed'] += 1
+        if done >= total or done - state['flushed'] >= CHECKPOINT_BATCHES * BATCH_SIZE:
+            _save_index(base_vectors, base_meta, ok_pairs)
+            state['flushed'] = done
+            print(f"[索引] 已嵌入 {done}/{total}（落盘 {len(ok_pairs)} 条，"
+                  f"失败 {state['failed']} 条）", file=sys.stderr)
+
+    get_embeddings(texts, api_key, on_batch=on_batch)
+
+    if not ok_pairs:
+        return {"error": "Embedding 生成失败，请检查 API key",
+                "embedFailed": state['failed'],
+                "chatDays": days, "articleDays": article_days}
 
     return {
         "status": "success",
-        "total": len(meta),
-        "new": len(new_items),
+        "total": len(base_meta) + len(ok_pairs),
+        "new": len(ok_pairs),
+        # 嵌不出来的那几个**要说出来**：它们既不在索引里，也是下次重跑的输入
+        "embedFailed": state['failed'],
         "chatDays": days,
         "articleDays": article_days,
         # 分片读不全时**要报出来**：`shardsFailed` 是"全读了"与"读了能读到的"之差，
@@ -581,8 +679,115 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
     return ordered
 
 
+# 混合检索：向量名次 + 本地关键词名次，用 RRF 合成。纯本地、不联网、不加依赖。
+#
+# **默认关**（`--hybrid` 打开）——这是量出来的，不是保守。同一天两组 A/B（2026-10-15）：
+#   · 逐字碎片查询（16 条，从记录正文中段取 12 字）：BM25 单独 16/16、向量单独 9/16、
+#     RRF 12/16 —— 关键词侧近乎满分，融合反被向量侧拖低；
+#   · 真实问句（5 条）：RRF 在 1 条上明显更好（「卫星遥感反演气溶胶光学厚度」把目标从第 3 提到
+#     第 2），在另外 4 条上**都不优于**向量单独，其中 2 条更差 ——「有没有讲遥感或卫星数据用在空气
+#     质量监测上的文章」的正确首条被挤出前五；「后向轨迹 HYSPLIT 怎么用」被"怎么用"这类虚词带偏。
+# 原因：RRF 给两侧**同等票权**，而中文问句里的虚词会把 BM25 侧变成纯噪声。所以它只在"问句里含
+# 稀有词、而那个词被语义侧丢掉"时值得开。将来若想让它在真实问句上默认开，先解决虚词投票（按 idf
+# 设阈、只让稀有词投票），并用同一套 A/B 复核 —— 别拿 5 条查询调阈值。
+RRF_K = 60          # RRF 的平滑常数：名次差在几十名以内才有区分度（教科书默认值）
+RRF_POOL = 200      # 两侧各取前多少名进融合；再往后的名次贡献 1/(60+200) 已经可以忽略
+BM25_K1 = 1.2
+BM25_B = 0.75
+RRF_POOL = 200      # 两侧各取前多少名进融合；再往后的名次贡献 1/(60+200) 已经可以忽略
+BM25_K1 = 1.2
+BM25_B = 0.75
+
+_CJK_RUN = re.compile(r'[一-鿿]+')
+_ASCII_WORD = re.compile(r'[a-z0-9]{2,}')
+
+
+def query_terms(text):
+    """把查询切成检索词：中文按**字符二元组**（没有分词器，二元组对中文足够稳），ASCII 按词。
+
+    二元组是刻意选的：它不需要词表、不会因为新词失手，代价是"的/了/在"这类高频字也会成词——
+    那由 BM25 的 idf 自己压下去（df 越大分越低），不用手写停用词表。
+    """
+    terms = []
+    for run in _CJK_RUN.findall(text):
+        if len(run) == 1:
+            terms.append(run)
+        else:
+            terms.extend(run[i:i + 2] for i in range(len(run) - 1))
+    terms.extend(_ASCII_WORD.findall(text.lower()))
+    seen, out = set(), []
+    for t in terms:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def keyword_rank(query, meta, in_scope=None, limit=RRF_POOL):
+    """本地 BM25 名次。返回 [(下标, 分数)]，按分数降序、**并列按下标升序**。
+
+    一遍扫过所有记录，同时算 df 与每条的 tf —— 不建额外索引文件，也就没有"索引与正文不同步"
+    这种失效。`in_scope` 是与向量侧**同一个掩码**：关键词这一侧也不能把另一条线的记录带进来。
+
+    `limit` 只截名次表（RRF 只看名次，第 200 名之后的贡献可以忽略），不影响打分。
+    """
+    terms = query_terms(query)
+    if not terms:
+        return []
+    docs = []          # [(下标, 小写文本)]，只含在范围内的
+    for i, m in enumerate(meta):
+        if in_scope is not None and not in_scope[i]:
+            continue
+        t = (m.get('text') or '').lower()
+        if t:
+            docs.append((i, t))
+    if not docs:
+        return []
+
+    tf, df, total_len = [], {}, 0
+    for _i, t in docs:
+        total_len += len(t)
+        row = {}
+        for term in terms:
+            c = t.count(term)
+            if c:
+                row[term] = c
+        if row:
+            for term in row:
+                df[term] = df.get(term, 0) + 1
+        tf.append(row or None)
+
+    n_docs = len(docs)
+    avgdl = (total_len / n_docs) or 1.0
+    scored = []
+    for (idx, t), row in zip(docs, tf):
+        if not row:
+            continue
+        score = 0.0
+        for term, c in row.items():
+            d = df[term]
+            idf = math.log(1 + (n_docs - d + 0.5) / (d + 0.5))
+            denom = c + BM25_K1 * (1 - BM25_B + BM25_B * len(t) / avgdl)
+            score += idf * c * (BM25_K1 + 1) / denom
+        scored.append((idx, score))
+    scored.sort(key=lambda kv: (-kv[1], kv[0]))
+    return scored[:limit]
+
+
+def rrf_fuse(rank_lists, k=RRF_K):
+    """Reciprocal Rank Fusion：只吃**名次**、不吃分数，所以两侧分数量纲不同也没关系。
+
+    并列时的次序按下标升序定死 —— 这个仓库对"同一批数据两次跑给出不同顺序"很敏感
+    （缓存会把偶然结果固化），所以不让它取决于 dict 的插入顺序。
+    """
+    score = {}
+    for lst in rank_lists:
+        for rank, idx in enumerate(lst):
+            score[idx] = score.get(idx, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
+
 def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = True,
-           line: str = 'all'):
+           line: str = 'all', hybrid: bool = False, from_source: str = None):
     """Semantic search with keyword fallback.
 
     `line` 在**取候选之前**就把不属于这条线的记录挡掉（把它们的相似度压成 -inf 再
@@ -600,26 +805,53 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
             np = require_numpy()
             vectors = np.load(VECTORS_FILE)
             meta = json.loads(META_FILE.read_text(encoding='utf-8'))
+            # meta 与 vectors 的行数必须一致 —— 中途被杀、或两份文件新旧不一，都可能不一样。
+            # 不一致时**按少的那个截断**：宁可少几条结果，也不能让下标越界，因为越界会被
+            # 下面那个 `except: pass` 变成"静默退回关键词"，那是最难看出来的一种失效。
+            rows = min(len(meta), int(vectors.shape[0]))
+            if rows < len(meta):
+                meta = meta[:rows]
+            elif rows < int(vectors.shape[0]):
+                vectors = vectors[:rows]
             query_embeddings = get_embeddings([query], api_key)
             if query_embeddings and not all(v == 0 for v in query_embeddings[0]):
                 query_vec = np.array(query_embeddings[0], dtype=np.float32)
                 query_vec = query_vec / np.linalg.norm(query_vec)
                 similarities = np.dot(vectors, query_vec)
-                if types is not None:
-                    in_scope = np.array([str(m.get('type', '')) in types for m in meta], dtype=bool)
+                # 关键词那一侧要用**同一个**掩码（`--line wiki` 时聊天不许从这条路上混进来）
+                in_scope_mask = None
+                if types is not None or from_source:
+                    in_scope = np.array([True if types is None else str(m.get('type', '')) in types
+                                         for m in meta], dtype=bool)
+                    if from_source:
+                        # **按公众号查是属性查询，不该指望向量。** 号名只住在 `id`（文件名
+                        # `<公众号>-<标题>.md`）里：2026-10-15 修正文提取时，`source:` 随 YAML 头
+                        # 一起离开了嵌入文本。实测（窗口 2026-09-12..10-13）：红星新闻 908 篇，
+                        # 语义前 10 只回 3 条；这里按 id 精确筛，能筛出全部。
+                        want = from_source.strip().lower()
+                        by_id = np.array([want in str(m.get('id', '')).lower()
+                                          or str(m.get('source', '')).lower() == want
+                                          for m in meta], dtype=bool)
+                        in_scope = in_scope & by_id
                     if not in_scope.any():
-                        # 一条都没有：**说出来**，别让它长成"搜了但没有结果"
+                        # 一条都没有：**说出来**（是这条线/这个号在索引里没有记录，不是"没命中"）
                         return []
                     similarities = np.where(in_scope, similarities, -np.inf)
+                    in_scope_mask = in_scope
                 # 先取一个比重排池更大的候选集，重排才有可以换的空间。
                 pool_size = max(top_k, RERANK_CANDIDATES) if rerank_results else top_k
                 if types is not None:
                     pool_size = min(pool_size, int(in_scope.sum()))
-                top_indices = np.argsort(similarities)[::-1][:pool_size]
+                vec_order = [int(i) for i in np.argsort(similarities)[::-1][:RRF_POOL]]
+                vec_order = [i for i in vec_order if np.isfinite(similarities[i])]
+                if hybrid:
+                    # 关键词那一侧走**同一个掩码**：`--line wiki` 时聊天记录不许从这条路上混进来。
+                    kw_order = [i for i, _s in keyword_rank(query, meta, in_scope_mask)]
+                    top_indices = [i for i, _s in rrf_fuse([vec_order, kw_order])[:pool_size]]
+                else:
+                    top_indices = vec_order[:pool_size]
                 results = []
                 for idx in top_indices:
-                    if not np.isfinite(similarities[idx]):
-                        continue   # 掩码挡掉的（-inf）不许混进结果
                     item = meta[idx]
                     results.append({**item, 'score': float(similarities[idx])})
                 if rerank_results:
@@ -699,6 +931,11 @@ def main():
     p.add_argument('--top-k', type=int, default=10)
     p.add_argument('--no-rerank', action='store_true',
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
+    p.add_argument('--hybrid', action='store_true',
+                   help='同时融合本地 BM25 名次（RRF）：问句里含稀有词时更准，含虚词时反而更差')
+    p.add_argument('--from', dest='from_source',
+                   help='只查某个公众号（按 id/文件名的子串匹配，不走语义）')
+
     add_line_arg(p)
 
     args = parser.parse_args()
@@ -723,18 +960,24 @@ def main():
             # 空成一片时读的人分不清"没命中"和"这条线根本没进索引"——而两者的下一步
             # （换个词 / 重建索引）是两回事。
             rows = search(query, api_key, top_k=args.top_k,
-                          rerank_results=not args.no_rerank, line=args.line)
+                          rerank_results=not args.no_rerank, line=args.line,
+                          hybrid=args.hybrid, from_source=args.from_source)
             counts = line_counts()
             result = {
                 'success': True,
                 'line': args.line,
                 'lineLabel': line_label(args.line),
+                'hybrid': args.hybrid,
+                'from': args.from_source,
                 'results': rows,
                 'indexCounts': counts,
             }
             if not rows and counts['all'] == 0:
                 result['note'] = ('语义索引还没建（output/.semantic_index 不存在）——'
                                   '先跑 weflow-cli search-index')
+            elif not rows and args.from_source:
+                result['note'] = ('索引里没有「%s」的记录 —— 按号筛的是文件名里的号名，'
+                                  '也可能是建索引那天的窗口没覆盖到它' % args.from_source)
             elif not rows and args.line != 'all' and counts[args.line] == 0:
                 result['note'] = ('索引里一条「%s」的记录都没有（建索引那天的窗口可能没覆盖到），'
                                   '先看 --line all' % line_label(args.line))

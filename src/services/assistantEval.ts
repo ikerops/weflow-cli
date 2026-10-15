@@ -574,7 +574,9 @@ export const EVAL_CASES: EvalCase[] = [
 export const EVAL_UNCOVERED: Record<string, string> = {
   fetch_article: '出网工具，评测器的 fetch 包装会让它抛错（"评测里出现第二个出口就说明有地方漏了"）。',
   search_public: '同上：搜狗搜索也是出网，评测里跑不了。',
-  search_semantic: '要 dashscopeApiKey **且**要建过语义索引，这台机器两样都没有。代码路径由 '
+  search_semantic: '要 dashscopeApiKey **且**要建过语义索引。2026-10-15 这台机器上两样都有了（索引 16,027 条、'
+    + '真机跑过 CLI），所以原因已经不是"没有"，而是它是**第二个出网出口**（查询向量要发给百炼）——'
+    + '评测只允许模型那一次调用离开进程。代码路径由 '
     + '`assistant-tools-branches.test.ts`（12 处，含"查询词走环境变量、不进 argv"）与 '
     + '`assistant-service.test.ts`（没配 key 时不出现在工具表里）覆盖。',
   save_memory: '**故意不按工具判**：记忆是按**结果**判的（`memoryContains`），'

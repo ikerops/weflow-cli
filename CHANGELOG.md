@@ -32,6 +32,54 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   Pinned by tests: a file whose copy fails reports `found` in the report and `unavailable` in the manifest
   (never "exported"), and the summary is asserted to carry counts, the report name, and **no absolute path**.
 
+- **The article half of the semantic index was embedding YAML metadata, not article text.** `collect_articles`
+  found the body by looking for a `## 正文` marker; measured on 2026-10-15, **none** of the 10,759 daily `.md` files
+  in the default window contains it (the real shape is `frontmatter → # title → > source → --- → ## AI 摘要 →
+  --- → repeated title → body`), so every record silently fell back to `content[:1000]` - the frontmatter. Sampled
+  300 of them: 100% contain `title:`, median CJK ratio **0.16**; the only content signal left was the title, which
+  is what "the article line ranks by title" actually meant. The extractor now reads the real structure (median CJK
+  ratio 0.16 → **0.80**, 299/300 files changed) and a test fails if it is reverted to the old fallback. Note that
+  an existing index does **not** pick this up by itself: an incremental build embeds new ids only, so it takes
+  `search-index --full`.
+- **Building the index can be interrupted without losing work already paid for, and it says where it is.** A full
+  rebuild of ~16k records takes over twenty minutes while the CLI gave its subprocess **five** - so `--full` had
+  never completed through the CLI at all, and since nothing was written until the very end, a timeout threw away
+  the whole run. It now flushes every 100 batches (vectors first, then `meta.json`, each through a temporary file
+  and `replace`), so a killed run leaves a **valid** partial index and a plain re-run continues from there, because
+  the flushed ids are already in `meta.json`. Batch failures (measured: `IncompleteRead` from the embedding
+  endpoint) are now **excluded** instead of being written as all-zero vectors - such ids would otherwise sit in
+  `meta` forever, since an incremental build only ever embeds new ones - and the count is reported as
+  `embedFailed`. Progress lines (`[索引] 已嵌入 N/M`) go to stderr.
+- **A mismatched index no longer degrades into "nothing found".** When `vectors.npy` holds more rows than
+  `meta.json` (a build killed between the two writes, or files edited by hand), the top-k indices ran past the end
+  of `meta` and the bare `except` in `search()` turned that `IndexError` into a silent fallback to keyword search -
+  a real query that presents as "no hits". The two are now truncated to the shorter one, which costs a few results
+  instead of the whole vector path.
+
+- **`search --hybrid`: an opt-in second ranker, off by default because it was measured not to earn it.** The new
+  flag fuses the vector ranking with a fully local BM25 ranking (Chinese is tokenised into **character bigrams**,
+  so no segmenter and no word list; one pass over the indexed texts, no extra index file, ~31 ms for 16k records)
+  using Reciprocal Rank Fusion. It fixes one concrete failure - the rarest word in a question being overridden by
+  the most frequent one: `卫星遥感反演气溶胶光学厚度` ranks the satellite-based PM2.5 paper 3rd on vectors alone
+  and 2nd with the flag. But measured on the same day, it is **not better** on four of five realistic questions
+  (it pushed the correct first hit out of the top five for `有没有讲遥感或卫星数据用在空气质量监测上的文章`, and
+  `后向轨迹 HYSPLIT 怎么用` was dragged off by function words), and on 16 verbatim-fragment queries BM25 alone
+  scored 16/16 against the fusion's 12/16 - RRF gives both sides equal voting power, and Chinese function words turn
+  BM25 into noise. So the default stays as measured-better and the flag is for questions that really do contain a
+  rare term. Note it also makes the printed `score` (cosine) non-monotonic, because the order now comes from the
+  fused ranks. The decision and both A/B tables are in D-110; making it a default would first need idf-gated
+  voting and a re-measurement on the same harness.
+
+- **`search --from <account>`: filter by source account, because that is an attribute query and vectors cannot
+  answer it.** Measured on the 2026-09-12..10-13 window (10,759 articles, 413 accounts): searching the account name
+  itself returns only 0-3 of the top 10 from that account for 红星新闻 (908 articles), 政事儿 (632) and 新京报 (529),
+  while the account name is present in **every** one of its records' `id` (the daily names files
+  `<account>-<title>.md`). The flag filters on that id as a substring (so `--from 红星` works), applies to the article
+  line only - a chat message has no source account - respects the same mask as the keyword side when `--hybrid` is on,
+  and says "the index has no records for this account" rather than returning an empty list silently. It gives the
+  right pool, not a better order within it: ranking inside an account is still semantic nearest-neighbour, so a
+  general-news account can return its own unrelated stories for a topical query.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**

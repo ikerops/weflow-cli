@@ -4999,6 +4999,8 @@ program
     .option('--top-k <n>', '返回数量', '10')
     .option('--line <line>', 'wiki=文章线(默认) / chat=聊天记录 / all=两条都搜', 'wiki')
     .option('--no-rerank', '不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
+    .option('--hybrid', '同时融合本地 BM25 名次（RRF 合成）：实测只在问句含稀有词时更好，默认关')
+    .option('--from <account>', '只查这个公众号的文章（按文件名匹配，不走语义）')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--dry-run', '仅预览，不读取索引或调用向量服务')
     .option('--yes', '确认执行可能调用云端向量服务的搜索')
@@ -5018,6 +5020,8 @@ program
         topK,
         line: opts.line,
         noRerank: opts.rerank === false,
+        hybrid: opts.hybrid === true,
+        from: opts.from || null,
         readsLocalIndex: true,
         mayUseCloudEmbedding: true,
       }
@@ -5046,7 +5050,9 @@ program
       // 接这条通道之前，`OPERATIONS.md` 一直在教用户敲 `search --no-rerank`，而 CLI 会答 `unknown option`
       // —— 同一份文档里 `--line` 是通的，所以它看起来像"能用的旗标"（2026-10-11 由文档命令面那道检查发现）。
       const args: string[] = [script, 'search', '--top-k', String(topK), '--line', opts.line,
-        ...(opts.rerank === false ? ['--no-rerank'] : [])]
+        ...(opts.rerank === false ? ['--no-rerank'] : []),
+        ...(opts.hybrid ? ['--hybrid'] : []),
+        ...(opts.from ? ['--from', opts.from] : [])]
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {
           timeout: 60_000, maxBuffer: 10 * 1024 * 1024,
@@ -5127,7 +5133,10 @@ program
       if (opts.full) args.push('--full')
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {
-          timeout: 300_000, maxBuffer: 10 * 1024 * 1024,
+          // 30 分钟：全量重建实测要跑二十分钟以上（16k 条 / 1500+ 批），而这里原来给的是 5 分钟 --
+          // 那个值让 `--full` 在真实索引上**从来没跑完过**（超时被杀；且脚本改成了边嵌边落盘之前，
+          // 中途被杀等于连已经嵌好的那部分也一起丢）。
+          timeout: 1_800_000, maxBuffer: 10 * 1024 * 1024,
           env: pythonProcessEnv(opts.apiKey, 'DASHSCOPE_API_KEY'),
         })
         if (opts.json) console.log(stdout.trim())
