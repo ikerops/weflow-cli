@@ -80,6 +80,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   right pool, not a better order within it: ranking inside an account is still semantic nearest-neighbour, so a
   general-news account can return its own unrelated stories for a topical query.
 
+- **A recall/precision evaluation harness now exists, and it immediately paid for itself: gated keyword fusion is
+  the new default.** `scripts/recall_eval.py` measures `search` with the standard metric set (Recall@1/5/10, MRR@10,
+  nDCG@10, Hit@1) plus a **coverage** count, and builds its ground truth at run time (a uniqueness-checked 12-character
+  fragment from the middle of a record's own text, and its title / first 30 characters) so no corpus text is committed;
+  hand-written questions go in an out-of-repo TSV (`question<TAB>anchor<TAB>line`). It requires `--yes` because each
+  question costs an embedding and leaves the machine, and it writes nothing. With that harness, the keyword side of
+  `--hybrid` gained two gates - only documents matching a **rare** term (df/N <= 5%) vote, their BM25 score must be
+  within 0.5x of the best, and a query with no rare term makes the keyword side **abstain** - and on the same three
+  batteries (40 fragment + 40 title + 12 hand-written questions) that turns the ungated version's zero gain into:
+  fragment recall@10 0.91 -> **1.00**, recall@5 0.89 -> 0.97, hit@1 0.60 -> **0.80**, title hit@1 0.83 -> 0.86, and
+  no change on the question battery. Nothing got worse, so **fusion is on by default** (`--no-hybrid` restores plain
+  vector order, and note the printed `score`, a cosine, is no longer monotonic). The ungated variant scoring exactly
+  like pure vectors is what explains D-110's earlier "harmful" measurement: the problem was function words voting,
+  not fusion. Threshold sensitivity is flat (0.02/0.7 and 0.10/0.3 bracket the same result), so the value is not
+  load-bearing; it must not be re-tuned on this battery.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**

@@ -4999,7 +4999,7 @@ program
     .option('--top-k <n>', '返回数量', '10')
     .option('--line <line>', 'wiki=文章线(默认) / chat=聊天记录 / all=两条都搜', 'wiki')
     .option('--no-rerank', '不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
-    .option('--hybrid', '同时融合本地 BM25 名次（RRF 合成）：实测只在问句含稀有词时更好，默认关')
+    .option('--no-hybrid', '不融合本地 BM25 名次（默认融合；门控后实测只增不减）')
     .option('--from <account>', '只查这个公众号的文章（按文件名匹配，不走语义）')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--dry-run', '仅预览，不读取索引或调用向量服务')
@@ -5020,7 +5020,7 @@ program
         topK,
         line: opts.line,
         noRerank: opts.rerank === false,
-        hybrid: opts.hybrid === true,
+        noHybrid: opts.hybrid === false,
         from: opts.from || null,
         readsLocalIndex: true,
         mayUseCloudEmbedding: true,
@@ -5051,7 +5051,7 @@ program
       // —— 同一份文档里 `--line` 是通的，所以它看起来像"能用的旗标"（2026-10-11 由文档命令面那道检查发现）。
       const args: string[] = [script, 'search', '--top-k', String(topK), '--line', opts.line,
         ...(opts.rerank === false ? ['--no-rerank'] : []),
-        ...(opts.hybrid ? ['--hybrid'] : []),
+        ...(opts.hybrid === false ? ['--no-hybrid'] : []),
         ...(opts.from ? ['--from', opts.from] : [])]
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {

@@ -605,7 +605,7 @@ weflow-cli wiki lint --json     # 机器可读
 ```powershell
 weflow-cli search "PM2.5 对植物用水效率的影响"
 weflow-cli search "..." --no-rerank     # 只按向量/关键词相似度，不调决策模型
-weflow-cli search "HYSPLIT 后向轨迹" --hybrid    # 再融合一次本地关键词名次（默认关，见下）
+weflow-cli search "HYSPLIT 后向轨迹" --no-hybrid   # 只按向量排（默认融合本地关键词名次，见下）
 weflow-cli search "暗访" --from 红星新闻        # 只查这个公众号（属性筛，不走语义）
 weflow-cli search "项目排期" --line chat   # 只看聊天那条线
 weflow-cli search "..." --line all         # 两条线一起（默认只搜文章线）
@@ -629,12 +629,29 @@ weflow-cli search "..." --line all         # 两条线一起（默认只搜文�
   所以顺序就是裸相似度，等同 `--no-rerank`。而这行 WARN 只有**直接跑 Python 脚本**时看得见——CLI 没转发
   子进程的 stderr，`search` 看起来一切正常。这是已知缺口，别把"没报错"读成"重排过了"。
 - 想确认重排有没有帮上忙：同一个查询跑一次带重排、一次 `--no-rerank` 对比顺序即可。
-- **`--hybrid` 会再融合一次本地关键词名次**（默认关，2026-10-15 起）。它解决的是一种具体的失效：问句里
+- **默认会融合一次本地关键词名次**（门控 BM25 + RRF，2026-10-15 起；`--no-hybrid` 关掉）。它解决的是一种具体的失效：问句里
   最稀有的那个词被出现最多的词带走 —— 实测「卫星遥感反演气溶胶光学厚度」在纯向量下把"基于遥感的 PM2.5 反演"
   排到第 3，开了它到第 2。但它在**另外 4 条实测问句上都不优于纯向量**（「有没有讲遥感…」被挤出前五、
   「后向轨迹 HYSPLIT 怎么用」被"怎么用"这类虚词带偏），所以默认不关它是不划算的：**问句里确实有稀有词时才开**。
   两点要知道：关键词侧全本地、不联网、不花钱（16k 条约 31 ms）；开了之后 `score`（余弦）可能不再单调，
   顺序来自融合名次而不是分数。
+
+### 检索质量怎么量（评测台）
+
+改了检索（换模型、调窗口、动排名）之后，"变好还是变坏"要用同一批题量，不能靠手工试问：
+
+```powershell
+python scripts/recall_eval.py --records 30 --yes      # 自动造题：碎片 + 标题，各线各 30 条
+python scripts/recall_eval.py --records 30 --dedup --yes   # 顺便量"同文本多号转载"吃掉多少名额
+python scripts/recall_eval.py --queries-file D:/q.tsv --records 0 --yes   # 只用你手写的问句
+```
+
+指标是标准口径：Recall@1/5/10、MRR@10、nDCG@10、Hit@1，外加**覆盖**（答案在库里根本不存在时不算
+排序失败）。`--queries-file` 的格式是 TSV：`问题<TAB>答案里必然出现的字面量<TAB>线`，**请放在仓库外**
+（锚串取自你的语料）。它要花钱（每题一次 embedding）且问句出境，所以必须 `--yes`；不写任何文件。
+
+2026-10-15 的基线（索引 15,995 条）：标题/开头 30 字 recall@10 = 0.97–1.00；12 字正文碎片
+recall@10 = 1.00、hit@1 = 0.80（**这是门控融合开了之后的数**，纯向量是 0.91/0.60）。
 
 ### 语音消息转文字
 

@@ -679,24 +679,29 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
     return ordered
 
 
-# 混合检索：向量名次 + 本地关键词名次，用 RRF 合成。纯本地、不联网、不加依赖。
+# 混合检索：向量名次 + 本地关键词名次（BM25），用 RRF 合成。纯本地、不联网、不加依赖。
 #
-# **默认关**（`--hybrid` 打开）——这是量出来的，不是保守。同一天两组 A/B（2026-10-15）：
-#   · 逐字碎片查询（16 条，从记录正文中段取 12 字）：BM25 单独 16/16、向量单独 9/16、
-#     RRF 12/16 —— 关键词侧近乎满分，融合反被向量侧拖低；
-#   · 真实问句（5 条）：RRF 在 1 条上明显更好（「卫星遥感反演气溶胶光学厚度」把目标从第 3 提到
-#     第 2），在另外 4 条上**都不优于**向量单独，其中 2 条更差 ——「有没有讲遥感或卫星数据用在空气
-#     质量监测上的文章」的正确首条被挤出前五；「后向轨迹 HYSPLIT 怎么用」被"怎么用"这类虚词带偏。
-# 原因：RRF 给两侧**同等票权**，而中文问句里的虚词会把 BM25 侧变成纯噪声。所以它只在"问句里含
-# 稀有词、而那个词被语义侧丢掉"时值得开。将来若想让它在真实问句上默认开，先解决虚词投票（按 idf
-# 设阈、只让稀有词投票），并用同一套 A/B 复核 —— 别拿 5 条查询调阈值。
+# **默认开**，`--no-hybrid` 关 —— 这个默认值是分两步量出来的（都记在 D-110 / D-111）：
+#   · 第一步（2026-10-15 上午）：**无门控**的 RRF 单独用是**有害**的。真实问句 5 条里只在 1 条上更好、
+#     2 条更差；逐字碎片 16 条上 BM25 单独 16/16、RRF 只有 12/16。原因是 RRF 给两侧同等票权，而中文
+#     问句里的虚词（怎么用/有没有/的）会把 BM25 侧变成纯噪声。当时结论：默认关。
+#   · 第二步（同日下午，加了门控）：只让"命中稀有词、且分数接近最高分"的文档投票；问句里**没有稀有词
+#     就整个弃权**。同一批题（frag 40 / title 40 / 手写问句 12）重测：
+#         碎片 recall@10 0.91 → **1.00**，@5 0.89 → 0.97，hit@1 0.60 → **0.80**
+#         标题 recall@10 0.97（不变），@5 0.91 → 0.94，hit@1 0.83 → 0.86
+#         手写问句 三档全不变（0.75/0.75/0.75）
+#     **三个台子都不掉**，于是翻成默认。无门控版同一批题零增益（0.91/0.60，与纯向量相同）——
+#     也就是说：让关键词侧起作用的是**门控**，不是融合本身。
+#   · 阈值敏感性（同一批题）：宽松 (0.10/0.3) 弱一点（碎片 @5 0.94），紧的 (0.02/0.7) 略好
+#     （@5 1.00）—— 平台是平的，说明这个数字不承重；取中间值，且**不许**再拿这一批题去微调它。
 RRF_K = 60          # RRF 的平滑常数：名次差在几十名以内才有区分度（教科书默认值）
 RRF_POOL = 200      # 两侧各取前多少名进融合；再往后的名次贡献 1/(60+200) 已经可以忽略
 BM25_K1 = 1.2
 BM25_B = 0.75
-RRF_POOL = 200      # 两侧各取前多少名进融合；再往后的名次贡献 1/(60+200) 已经可以忽略
-BM25_K1 = 1.2
-BM25_B = 0.75
+
+# 门控用：稀有词阈值（词出现在 ≤5% 的在范围文档里才算"稀有"）与分数相对阈
+HYBRID_RARE_RATIO = 0.05
+HYBRID_SCORE_RATIO = 0.5
 
 _CJK_RUN = re.compile(r'[一-鿿]+')
 _ASCII_WORD = re.compile(r'[a-z0-9]{2,}')
@@ -723,7 +728,8 @@ def query_terms(text):
     return out
 
 
-def keyword_rank(query, meta, in_scope=None, limit=RRF_POOL):
+def keyword_rank(query, meta, in_scope=None, limit=RRF_POOL,
+                  rare_ratio=None, score_ratio=None):
     """本地 BM25 名次。返回 [(下标, 分数)]，按分数降序、**并列按下标升序**。
 
     一遍扫过所有记录，同时算 df 与每条的 tf —— 不建额外索引文件，也就没有"索引与正文不同步"
@@ -759,9 +765,20 @@ def keyword_rank(query, meta, in_scope=None, limit=RRF_POOL):
 
     n_docs = len(docs)
     avgdl = (total_len / n_docs) or 1.0
+
+    # 门控（1）：**没有稀有词就弃权**。中文问句里的"怎么用/有没有/的"会成词，但它们在语料里
+    # 到处都是 —— 只命中这类词的文档不该来投票（无门控的 RRF 正是栽在这里，见 D-110）。
+    rare = None
+    if rare_ratio is not None:
+        rare = {t for t, d in df.items() if d and d / n_docs <= rare_ratio}
+        if not rare:
+            return []
+
     scored = []
     for (idx, t), row in zip(docs, tf):
         if not row:
+            continue
+        if rare is not None and not (set(row) & rare):
             continue
         score = 0.0
         for term, c in row.items():
@@ -770,6 +787,12 @@ def keyword_rank(query, meta, in_scope=None, limit=RRF_POOL):
             denom = c + BM25_K1 * (1 - BM25_B + BM25_B * len(t) / avgdl)
             score += idf * c * (BM25_K1 + 1) / denom
         scored.append((idx, score))
+
+    # 门控（2）：长词的垃圾二元组（"器学""习或"）同样稀有 ⇒ 再用"分数接近最高分"筛一道。
+    if score_ratio is not None and scored:
+        top = max(s for _i, s in scored)
+        scored = [(idx, s) for idx, s in scored if s >= score_ratio * top]
+
     scored.sort(key=lambda kv: (-kv[1], kv[0]))
     return scored[:limit]
 
@@ -787,7 +810,7 @@ def rrf_fuse(rank_lists, k=RRF_K):
     return sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
 
 def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = True,
-           line: str = 'all', hybrid: bool = False, from_source: str = None):
+           line: str = 'all', hybrid: bool = True, from_source: str = None):
     """Semantic search with keyword fallback.
 
     `line` 在**取候选之前**就把不属于这条线的记录挡掉（把它们的相似度压成 -inf 再
@@ -846,7 +869,9 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                 vec_order = [i for i in vec_order if np.isfinite(similarities[i])]
                 if hybrid:
                     # 关键词那一侧走**同一个掩码**：`--line wiki` 时聊天记录不许从这条路上混进来。
-                    kw_order = [i for i, _s in keyword_rank(query, meta, in_scope_mask)]
+                    kw_order = [i for i, _s in keyword_rank(query, meta, in_scope_mask,
+                                                       rare_ratio=HYBRID_RARE_RATIO,
+                                                       score_ratio=HYBRID_SCORE_RATIO)]
                     top_indices = [i for i, _s in rrf_fuse([vec_order, kw_order])[:pool_size]]
                 else:
                     top_indices = vec_order[:pool_size]
@@ -931,8 +956,8 @@ def main():
     p.add_argument('--top-k', type=int, default=10)
     p.add_argument('--no-rerank', action='store_true',
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
-    p.add_argument('--hybrid', action='store_true',
-                   help='同时融合本地 BM25 名次（RRF）：问句里含稀有词时更准，含虚词时反而更差')
+    p.add_argument('--no-hybrid', action='store_true',
+                   help='不融合本地 BM25 名次（默认融合：加门控后实测三个台子都只增不减）')
     p.add_argument('--from', dest='from_source',
                    help='只查某个公众号（按 id/文件名的子串匹配，不走语义）')
 
@@ -961,13 +986,13 @@ def main():
             # （换个词 / 重建索引）是两回事。
             rows = search(query, api_key, top_k=args.top_k,
                           rerank_results=not args.no_rerank, line=args.line,
-                          hybrid=args.hybrid, from_source=args.from_source)
+                          hybrid=not args.no_hybrid, from_source=args.from_source)
             counts = line_counts()
             result = {
                 'success': True,
                 'line': args.line,
                 'lineLabel': line_label(args.line),
-                'hybrid': args.hybrid,
+                'hybrid': not args.no_hybrid,
                 'from': args.from_source,
                 'results': rows,
                 'indexCounts': counts,
