@@ -411,6 +411,26 @@ account has no records instead of returning nothing. Verified on the live index:
 order inside it - ranking within a general-news account is still nearest-neighbour, so a topical query can return
 that account's unrelated stories.
 
+**A precision baseline was measured the same day, and it has to be read split - the raw number is misleading on its
+own.** Ten fixed questions, top-5 each, every item labelled relevant / partial / irrelevant by the configured
+DeepSeek model against one stated criterion ("does this item answer what was asked"), **not** by human label - and
+not independently spot-checked yet beyond the author's own read of all 50. Raw strict precision@5 = 12/50 = **24%**
+(loose, counting `partial`, 62%); after collapsing identical texts it is 12/46 = 26%, so multi-account reposts cost
+only ~8% of the slots. The split is what matters: **content questions ("what does X say") score 12/32 = 38%**, while
+**procedure questions ("how do I use X / where do I find Y") score 0/14**. Two of the three worst queries are
+**coverage, not ranking**: the index contains **zero** records mentioning `HYSPLIT` (and zero with `后向轨迹`), one
+with `在线监测`, two with `政策文件` - a corpus of 公众号 articles has no manuals in it, so no ranking change can fix
+those. Even inside the content half the shape is the same one the recall battery showed: precision@1 is 5/10, and the
+entries below the first are usually same-domain **neighbours** rather than answers (a monitoring question returns
+aerosol-formation papers; an air-quality-forecast question returns wind-power and tropical-cyclone forecast papers).
+That is the signature of one vector per record with only the first ~500 characters embedded and no rerank available.
+
+**One lever is measured dead, not merely unproven: filtering the index by `relevance`.** In this window every one of
+the 10,759 articles carries `relevance: 中` - the window is mostly backfilled days, and the backfill path deliberately
+does no AI work, so the field holds a default rather than a judgement (see the `result` sub-scores in the quality
+notes: `relevanceScore` only exists where the judge actually ran). It therefore has no discriminative power here and
+must not be proposed as a precision fix without first checking that the judge ran for those days.
+
 is what a unit test can hold. Two things about this were
 wrong on 2026-09-27 and are now fixed: the concept directory was **declared in two places** (`VAULT_DIRS` said
 `007_Wiki/Concepts`, every writer and reader used the top-level `Wiki/Concepts`), so `007_Wiki/` was created and
