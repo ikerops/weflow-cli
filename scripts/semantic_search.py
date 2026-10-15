@@ -647,9 +647,19 @@ def llm_rerank(query, results, pool_size=RERANK_CANDIDATES, key=None, model=None
     """
     if len(results) < 2:
         return results
-    cfg = load_config()
-    key = key or get_api_key(cfg) or cfg.get('deepseekApiKey') or ''
-    model = model or cfg.get('aiModel') or 'deepseek-chat'
+    try:
+        cfg = load_config()
+        key = key or get_api_key(cfg) or cfg.get('deepseekApiKey') or ''
+        model = model or cfg.get('aiModel') or 'deepseek-chat'
+    except Exception as error:      # noqa: BLE001
+        # 读不到配置（这台机器可能还没有 ~/.weflow-cli/config.json）也要**保持原序**：
+        # 重排不该让检索失败，更不能一路抛到 `search()` 的 `except: pass` 里
+        # —— 那会**静默退回关键词检索**，最难看出来的一种失效。
+        print('  [WARN] 重排读不到配置（%s），保持原顺序' % type(error).__name__,
+              file=sys.stderr)
+        RERANK_STATE.update(provider='llm', degraded=True,
+                            error='config-unreadable', scored=0)
+        return results
     if not key:
         RERANK_STATE.update(provider='llm', degraded=True, error='no-chat-key', scored=0)
         return results

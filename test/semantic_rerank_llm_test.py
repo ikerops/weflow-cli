@@ -65,6 +65,10 @@ class LlmRerankTests(unittest.TestCase):
         self._saved = (ss.urllib.request.urlopen, dict(ss.RERANK_STATE),
                        ss.get_api_key, ss.load_config)
         self.calls = []
+        # 自足：不依赖本机 ~/.weflow-cli/config.json（CI 上没有它 —— 第一版因此
+        # 在本机绿、在 CI 红）
+        ss.load_config = lambda: {'aiModel': 'fake-model'}
+        ss.get_api_key = lambda config=None: 'fake-key'
 
     def tearDown(self):
         (ss.urllib.request.urlopen, _state, ss.get_api_key, ss.load_config) = self._saved
@@ -103,6 +107,17 @@ class LlmRerankTests(unittest.TestCase):
         out = ss.llm_rerank('q', items(), key='k', model='m')
         self.assertEqual(len(out), 4)
         self.assertTrue(ss.RERANK_STATE['degraded'])
+    def test_unreadable_config_keeps_order_and_is_visible(self):
+        # 配置读不出来时不许抛：一抛就会被 search() 的 except 吞成"静默退回关键词"
+        def boom():
+            raise FileNotFoundError('no config')
+        ss.load_config = boom
+        ss.urllib.request.urlopen = self.fake_open('{}')
+        out = ss.llm_rerank('q', items(), key='k', model='m')
+        self.assertEqual(len(out), 4)
+        self.assertEqual(self.calls, [], '配置读不到就不该发请求')
+        self.assertEqual(ss.RERANK_STATE['error'], 'config-unreadable')
+
 
     def test_no_key_makes_no_request(self):
         # 生产语义是"显式 key 优先、否则读配置"——所以要验"完全没有 key"，
