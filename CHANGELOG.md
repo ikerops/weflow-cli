@@ -96,6 +96,22 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   not fusion. Threshold sensitivity is flat (0.02/0.7 and 0.10/0.3 bracket the same result), so the value is not
   load-bearing; it must not be re-tuned on this battery.
 
+- **The rerank half of the pipeline works again - it now falls back to the configured chat model, and its state is
+  visible in the output.** Rerank was never *running* on this machine: the Jev/Typesafe contract returns
+  `HTTP 451 not available in your region`, and the failure was only a stderr WARN, which the CLI does not forward -
+  so a search reported nothing and looked like "fine". `rerank_dispatch` now tries the contract first and, if that
+  client fails or is absent, reranks with the configured OpenAI-compatible chat model; both failing keeps the original
+  order, and `RERANK_STATE` (`provider` / `degraded` / `error` / `scored`) travels into the JSON so "not reranked" can
+  no longer be mistaken for "reranked". Passages are cleansed before they are sent (bold markers, 公众号 boilerplate,
+  bylines, image/link syntax), because the excerpt is only 300 characters. Measured on the same 40 questions: hit@1
+  0.55 -> **0.65**, recall@5 0.65 -> **0.80**, MRR@10 0.59 -> **0.72**, nDCG@10 0.63 -> **0.74**, with the weakest
+  cell (verbatim fragment on the article line) going recall@5 0.30 -> **0.70** - in the same range the literature
+  reports for retrieve-and-rerank (MS MARCO nDCG@10 0.396 dense -> 0.452 with a reranker; a public example puts
+  hybrid-RRF 32.95 -> 36.16 with rerank). Two consequences worth knowing: **every search now spends one model call**
+  (~2-3k tokens, ~¥0.004, plus a few seconds) and the assistant, MCP and `chat` share this path, so `--no-rerank`
+  is the escape; and one regression is recorded rather than smoothed over - title/article recall@5 slipped 1.00 to
+  0.90 (one case at n=10), whose fix (bigger candidate pool, or protecting the retrieval-side top hit) is not done.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**

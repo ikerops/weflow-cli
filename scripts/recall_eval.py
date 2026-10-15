@@ -133,6 +133,8 @@ def main():
     ap.add_argument('--top-k', type=int, default=10)
     ap.add_argument('--seed', type=int, default=7)
     ap.add_argument('--dedup', action='store_true', help='排名前把同文本记录合并')
+    ap.add_argument('--rerank', action='store_true',
+                    help='调真正的重排（先试 Jev 契约，再退到已配置的对话模型）')
     ap.add_argument('--json', action='store_true')
     ap.add_argument('--yes', action='store_true', help='确认调用云端 embedding（每条约十几 tokens）')
     args = ap.parse_args()
@@ -167,6 +169,12 @@ def main():
             sims = np.where(np.array([str(m.get('type', '')) in types for m in meta]), sims, -np.inf)
         order = [int(i) for i in np.argsort(sims)[::-1]]
         order = [i for i in order if np.isfinite(sims[i])]
+        if args.rerank:
+            # 与 `search()` 同一条路：先按原契约（Jev）排，失败再退到已配置的对话模型
+            pool = [{**meta[i], '_idx': i, 'score': float(sims[i])}
+                    for i in order[:ss.RERANK_CANDIDATES]]
+            ranked = ss.rerank_dispatch(c['query'], pool, ss.create_client())
+            order = [it['_idx'] for it in ranked] + list(order[ss.RERANK_CANDIDATES:])
         if args.dedup:
             seen, keep = set(), []
             for i in order:
@@ -190,6 +198,7 @@ def main():
         return out
 
     report = {'config': {'records': args.records, 'seed': args.seed, 'dedup': args.dedup,
+                         'rerank': args.rerank, 'rerankState': dict(ss.RERANK_STATE),
                          'topK': args.top_k, 'indexCounts': ss.line_counts()},
               'overall': agg(rows), 'byGroup': {}, 'cases': [
                   {'form': r['form'], 'line': r['line'], 'query': r['query'], 'rank': r['rank']}

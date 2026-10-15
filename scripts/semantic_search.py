@@ -62,7 +62,7 @@ except:
     pass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _utils import load_config, decrypt_lock, get_dashscope_key, LINE_LABELS  # noqa: E402
+from _utils import load_config, decrypt_lock, get_dashscope_key, get_api_key, LINE_LABELS  # noqa: E402
 from jev_client import create_client
 
 OUTPUT_ROOT = 'output'
@@ -611,6 +611,104 @@ def build_rerank_questions(count):
     }
 
 
+# 这一趟重排是谁排的、有没有降级 —— 必须能带进输出。
+# 原来的写法里"重排失败"只往 stderr 打一行 WARN，而 CLI 不转发子进程 stderr，
+# 于是"没报错"会被读成"重排过了"。状态放这里，主流程把它塞进 JSON。
+RERANK_STATE = {'provider': None, 'degraded': False, 'error': None, 'scored': 0}
+
+_RERANK_LLM_RUBRIC = (
+    '给每条候选打 0-100 分，判据是**它是否直接回答了问题**（"话题相近"不算）：'
+    '100 = 直接给出所需信息；60-80 = 含大部分相关信息；30-50 = 只沾边；0-20 = 无关。'
+    '每条候选都必须有分数。只输出 JSON：{"scores":[{"i":1,"score":85},{"i":2,"score":20}]}。')
+
+
+def cleanse_passage(text, limit=RERANK_EXCERPT_CHARS):
+    """送进重排前的段落清洗（照 WeKnora 的 passage cleansing）。
+
+    不清洗的话，模型有相当一部分注意力花在 `**加粗**`、公众号套话、作者署名、"点击蓝字"这些噪声上，
+    而候选摘录本来就只有 300 字。清洗是纯文本操作，不改判据。
+    """
+    s = text or ''
+    s = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', s)          # 图片
+    s = re.sub(r'\[([^\]]{0,40})\]\([^)]*\)', r'\1', s)  # 链接留文字
+    s = re.sub(r'\*{1,3}', '', s)                        # 加粗/斜体标记
+    s = re.sub(r'(点击蓝字|关注我们|阅读原文|继续滑动看下一个|轻触阅读原文|设为星标)', ' ', s)
+    s = re.sub(r'^\s*原创\s+\S+.*$', ' ', s, flags=re.M)  # 署名行
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()[:limit]
+
+
+def llm_rerank(query, results, pool_size=RERANK_CANDIDATES, key=None, model=None):
+    """用**已配置的对话模型**（OpenAI 兼容）重排。
+
+    为什么要有它：这条管线本来是"召回 + 重排"两段，而重排在本机一直是**空转**的
+    （Typesafe 返 `HTTP 451 not available in your region`），所以排序只有一段。
+    契约与 Jev 那版同构：一次请求给全部候选打分；校验不过就**保持原序并把降级说出来**。
+    """
+    if len(results) < 2:
+        return results
+    cfg = load_config()
+    key = key or get_api_key(cfg) or cfg.get('deepseekApiKey') or ''
+    model = model or cfg.get('aiModel') or 'deepseek-chat'
+    if not key:
+        RERANK_STATE.update(provider='llm', degraded=True, error='no-chat-key', scored=0)
+        return results
+
+    pool = results[:pool_size]
+    lines = []
+    for i, item in enumerate(pool):
+        lines.append('【候选%d】%s｜%s' % (i + 1, item.get('title') or item.get('source') or '',
+                                          cleanse_passage(item.get('text') or '')))
+    payload = {
+        'model': model,
+        'messages': [{'role': 'user', 'content': '问题：%s\n\n候选：\n%s\n\n%s'
+                      % (query, chr(10).join(lines), _RERANK_LLM_RUBRIC)}],
+        'response_format': {'type': 'json_object'}, 'temperature': 0,
+    }
+    request = urllib.request.Request('https://api.deepseek.com/v1/chat/completions',
+                                     data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+                                     headers={'Authorization': 'Bearer %s' % key,
+                                              'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        scores = {int(row['i']): float(row['score'])
+                  for row in json.loads(data['choices'][0]['message']['content'])['scores']}
+    except Exception as error:                     # noqa: BLE001 —— 重排不该让检索失败
+        print('  [WARN] 重排（%s）失败：%s: %s —— 保持原顺序'
+              % (model, type(error).__name__, error), file=sys.stderr)
+        RERANK_STATE.update(provider='llm', degraded=True,
+                            error=type(error).__name__, scored=0)
+        return results
+
+    if set(scores) != set(range(1, len(pool) + 1)):
+        # 编号不齐 = 模型把候选搞混了 —— 这正是重排最危险、最不容易察觉的失效方式，宁可原序
+        print('  [WARN] 重排返回的候选编号不齐（%d/%d），保持原顺序'
+              % (len(scores), len(pool)), file=sys.stderr)
+        RERANK_STATE.update(provider='llm', degraded=True, error='incomplete-scores', scored=0)
+        return results
+
+    order = sorted(range(len(pool)), key=lambda i: (-scores[i + 1], i))
+    ranked = []
+    for i in order:
+        item = dict(pool[i])
+        item['rerankScore'] = scores[i + 1]      # `score` 保持原义，新的放这里
+        ranked.append(item)
+    RERANK_STATE.update(provider='llm', degraded=False, error=None, scored=len(ranked))
+    return ranked + list(results[pool_size:])
+
+
+def rerank_dispatch(query, results, client=None):
+    """先按原契约（Jev/Typesafe）重排，不可用或失败则退到已配置的对话模型。
+
+    两个都失败时返回原序，并把 `RERANK_STATE` 留在"降级"上 —— 别让"没重排"看起来像"重排过了"。
+    """
+    RERANK_STATE.update(provider=None, degraded=False, error=None, scored=0)
+    if client is not None:
+        out = rerank(query, results, client)
+        if not RERANK_STATE['degraded'] and RERANK_STATE['scored']:
+            return out
+    return llm_rerank(query, results)
 def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
     """用**一次**决策请求给检索结果重排。
 
@@ -646,6 +744,8 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
         # `file=sys.stderr`：`--json` 时 stdout 是机器在解析的那一份（同文件其它 WARN 早就这样）
         print('  [WARN] 重排失败（%s），保持原检索顺序：%s' % (type(error).__name__, error),
               file=sys.stderr)
+        RERANK_STATE.update(provider='typesafe', degraded=True,
+                            error=type(error).__name__, scored=0)
         return results
 
     scored = []
@@ -659,6 +759,8 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
 
     if all(value is None for value, _i, _item in scored):
         print('  [WARN] 重排没有返回任何可用分数，保持原检索顺序', file=sys.stderr)
+        RERANK_STATE.update(provider='typesafe', degraded=True,
+                            error='no-usable-scores', scored=0)
         return results
 
     # 没拿到分数的按原序垫在最后，而不是当成 0 分——"未知"和"不相关"不是一回事。
@@ -676,6 +778,8 @@ def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
             entry['rerankScore'] = round(value, 3)
         ordered.append(entry)
     ordered.extend(results[pool_size:])
+    RERANK_STATE.update(provider='typesafe', degraded=False, error=None,
+                        scored=len(ordered))
     return ordered
 
 
@@ -880,7 +984,7 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                     item = meta[idx]
                     results.append({**item, 'score': float(similarities[idx])})
                 if rerank_results:
-                    results = rerank(query, results, create_client())
+                    results = rerank_dispatch(query, results, create_client())
                 return results[:top_k]
         except:
             pass
@@ -890,7 +994,7 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                              line=line)
     if rerank_results:
         # 关键词打分比余弦更粗，重排在这里的收益反而更大。
-        results = rerank(query, results, create_client())
+        results = rerank_dispatch(query, results, create_client())
     return results[:top_k]
 
 
@@ -993,6 +1097,7 @@ def main():
                 'line': args.line,
                 'lineLabel': line_label(args.line),
                 'hybrid': not args.no_hybrid,
+                'rerank': dict(RERANK_STATE),
                 'from': args.from_source,
                 'results': rows,
                 'indexCounts': counts,

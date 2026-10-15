@@ -1406,6 +1406,52 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-112: 把"召回 + 重排"的第二段点亮 —— 重排改用本机可用的模型，并给出降级状态
+
+**Status:** Active（2026-10-15 实测：同一批题加上重排，hit@1 0.55→0.65、nDCG@10 0.63→0.74）
+
+**Decision.** 重排这一段**恢复工作**，但换一个真正能连上的提供方：先按原契约（Jev/Typesafe）试，
+失败或不可用则退到**配置里的对话模型**（OpenAI 兼容，本机是 deepseek 系）；两条都失败就保持原序，
+并把 `RERANK_STATE`（`provider` / `degraded` / `error` / `scored`）**带进 JSON 输出**。同时借 WeKnora
+的做法，在送进模型前做**段落清洗**（去 `**加粗**`、公众号套话、署名行、图片/链接语法）——
+候选摘录本来只有 300 字，不清洗会有一大半注意力花在噪声上。
+
+**Reason: 主流管线是两段，而我们的第二段一直是黑的。** 本机 Typesafe 返 `HTTP 451 not available in your
+region`，于是"重排"只在 stderr 打一行 WARN（CLI 还不转发子进程 stderr）——查不到、也没生效。参考口径：
+- MS MARCO nDCG@10：BM25 **0.184** → 稠密 **0.396** → 稠密+重排 **0.452**；
+- 一个公开的 retrieve&rerank 例子（NanoNFCorpus）：混合 RRF nDCG@10 **32.95** → 混合 RRF+重排 **36.16**，
+  MRR 50.19 → 55.77；
+- 中文域：bge-reranker-large 把 Top-10 准确率从 80.7% 提到 **91.2%**；
+- 生产参考阈值（腾讯云）：HitRate@3 ≥ 90%、Recall@10 ≥ 0.90、MRR ≥ 0.75、nDCG@5 ≥ 0.80。
+- 反面也记一笔：有文献报告重排器**会倒退**（jina-reranker-v2-base 在 BM25 形状的候选池上 −7.5pp），
+  所以"加了重排"不是无条件更好，必须用同一批题量。
+
+同一批题（40 条：碎片/标题各 20，seed 固定）实测：
+
+| 组 | 指标 | 不重排 | **加重排** |
+| --- | --- | --- | --- |
+| 全部 | hit@1 | 0.55 | **0.65** |
+| 全部 | recall@5 | 0.65 | **0.80** |
+| 全部 | MRR@10 | 0.59 | **0.72** |
+| 全部 | nDCG@10 | 0.63 | **0.74** |
+| 碎片/文章（最弱那格） | recall@5 | 0.30 | **0.70** |
+| 碎片/文章 | MRR@10 | 0.32 | **0.53** |
+| 标题/聊天 | hit@1 | 0.60 | **0.80** |
+| 标题/文章 | recall@5 | 1.00 | 0.90 ⚠️ |
+
+**一处倒退如实记下**：标题/文章那格 recall@5 从 1.00 掉到 0.90 —— 一个用例被重排挤出了前五（候选池 20，
+重排认为别的更相关）。n=10 时一个用例就是 0.10，**不能据此说重排有害**，但也不能装作没发生：
+如果后续在这格上重复出现，对策是"扩大候选池"或"保住召回侧的第 1 名"，**这两条都还没做**。
+
+**Consequences.**
+- **每次检索现在会多花一次模型调用**（约 20 条候选 × 300 字 ≈ 2–3k tokens，deepseek 系约 ¥0.004/次）
+  和几秒延迟；`search`、助手的 `search_semantic`、MCP 的 `search_knowledge`、`chat` 走的是同一个
+  `search()`，所以它们**一起变了**。要省就 `--no-rerank`。
+- 重排仍然"不该让检索失败"：没有 key、网络断、模型返回的编号不齐（这是重排最危险的失效方式）都
+  **保持原序**并标 `degraded`；区别是现在这件事**看得见**了。
+- 借 WeKnora 的两条还没做：**重排后的 MMR 去冗余**（它用 λ=0.7）与**候选不足时迭代扩池**。
+  MMR 与"单答案召回"指标是相冲的（它故意压掉相似项），要量的话得用"去重后的名次"或人工判据。
+
 ## D-111: 召回有了评测台，门控后的关键词融合因此翻成默认
 
 **Status:** Active（判据是 2026-10-15 用新评测台跑的三组 A/B；本条同时更正 D-110 的结论）
