@@ -1406,6 +1406,68 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-120: 决策模型的三条通路：原生 / 国内对话模型 / OpenRouter —— 默认原生，国内那条是给被地区封锁的机器的
+
+**Status:** Active（2026-10-17 本机实测：key 有效性、8 次真实调用、契约用仓库自己的 `_check_choice`
+验过；离线测试 34 条；`judgeProvider=chat` 已在本机打开）
+
+**Decision.** 新增配置 `judgeProvider`，取值三条：
+
+| 取值 | 走哪 | 需要什么 | 本机可用性【实测】 |
+| --- | --- | --- | --- |
+| `native`（**默认**） | `api.typesafe.ai` 的 `systemone` | `typesafeApiKey` | ❌ **HTTP 451 地区封锁** |
+| **`chat`**（推荐给本机） | 配置里**已有的**对话模型：`aiBaseUrl` 中转站 / `aiModel` / `deepseekApiKey` | 无需新厂商、新 key | ✅ `deepseek-chat` **1.0 s/篇**、契约通过 |
+| `openrouter` | OpenRouter 的 chat/completions | `openrouterApiKey` + `openrouterJudgeModel` | ⚠️ 契约通过但**该账号 0 额度**，调用被 402 拒 |
+
+外加 `openrouterApiKey`（加密落盘）与 `openrouterJudgeModel`（默认 `typesafe/jev-router`）。
+`create_client()` 按 `judgeProvider` 分派，两条 chat 路共用同一个 `ChatJevClient`（`base_url` 可换），
+它与 `JevClient` 是**同一个鸭子类型**，所以**一处开关替掉整层**：日报判断、检索重排、草稿回复、
+欠话台账、路由选词共用它。**默认 `native`，行为与引入之前完全一致。**
+
+**Reason.【实测】**
+- **原生这条路在本机是死的**：`api.typesafe.ai` 返回 HTTP 451 "not available in your region"。
+  症状不是报错而是**静默退化**：最近 40 个完整天 12,542 篇里 **0 篇**带 `relevanceScore`、
+  `decisionModel` 全空；同层的重排/欠话/草稿跟着一起退化。
+- **"中国地区可用的类 Jev"就在配置里**：拿同一份提示词与同一套校验问三个国内模型，**契约全过**——
+  `deepseek-chat`（1.0 s、1649/69 tokens）、`deepseek-reasoner`（7.2 s）、`qwen-plus`（2.3 s）。
+  `qwen-turbo` 撞的是账号速率限制（429），不是地区。所以这条路**不需要新厂商、新 key**，
+  一句话 `config set judgeProvider chat` 就打开；成本按 tokens 估是 **¥1/天量级**（500 篇，见下）。
+- **⚠️ 契约一致 ≠ 判断一致**：同一篇文章 `deepseek-chat` 给 relevance=1 / 收录概率 0.15，
+  `qwen-plus` 给 **2 / 0.85**。下游阈值（0.5/1.5、0.50）是对着 Jev 拍的，所以换判断器要当成
+  **换了一把尺子**——这也是 `relevanceScore`/`includeScore`/`usage.model` 都要落盘的用处。
+- **实际服务的模型可能与请求的别名不同【实测】**：请求 `deepseek-chat`，`usage.model` 回的是
+  **`deepseek-flash`**。这正是 D-034 那条"落盘实际服务的模型"在起作用——不然"线上跑的不是测过的那个"
+  永远不可见。
+- **地区限制是逐模型的 —— "能调一个"不等于"能调所有"**：OpenRouter 上
+  `typesafe/jev-router` 与 `:free` 模型能通，而 `openai/gpt-4o-mini` 返回
+  **403 "This model is not available in your region."**（失败在路由的 "Gate Endpoints with Geo Restrictions"）。
+  换模型必须在本机重测一次——这条规矩是被那次 403 换来的。
+- **契约改由我们自己保证，这是换通路真正的代价**：原生是服务端直接给结构化答案
+  （`{probabilities, choice}` / `{score}` / `{noul}`），chat 模型要**被要求**才会给，所以提示词写死
+  输出形状、客户端逐条验。四条概率校验复用原生那套 `_check_choice`，另加 `_check_score`
+  与 `_check_noul`——**noul 是概率不是布尔**，这个坑仓库踩过（把浮点当布尔读，每问都读成"否"）。
+- **OpenRouter 的成本【实测】与路由的不确定性**：一次调用路由到 `x-ai/grok-4.7`，花 **$0.014**，
+  其中 `reasoning_tokens` **1535**（比正文还长）；另一次路由到 `z-ai/glm-5.3-flash`。
+  **路由到谁每次可能不同**，所以只能按最坏估：**一天 500 篇 ≈ $7/天**，
+  而且 `max_tokens` **管不住**它（实测设 600、实际返回 1598）。
+- **那个 OpenRouter key 的账号没有额度【实测】**：`/credits` 报 `total_credits: 0`，请求被 402 拒
+  （"you can only afford 6666 tokens"）。所以 **OpenRouter 那条现在打不通**，接好了但没打开。
+
+**Consequences.**
+- 一个开关同时改五处消费者，所以默认必须是 `native`；打开前要知道成本量级
+  （`chat` ≈ ¥1/天，`openrouter` 最坏 ≈ $7/天）。
+- 四种失败的处置完全不同，所以报错分开说：**402=额度**、**403+"region"=地区（换模型才有用，不是换 key）**、
+  **401=鉴权**、**空正文=推理吃光预算（调大 `OPENROUTER_MAX_TOKENS`）**。
+  混在一起会让人去换 key，而那条路上换 key 一点用都没有。
+- 契约漂移**当场抛** `JevError`（不放行、不给默认值）：失效方式若是"形状变了但看着正常"，
+  下游读到的就是错的判断。
+- **不许做的推断**：不能说任两条通路的判断一致——原生在本机调不通**无法对拍**，而两条 chat 路之间
+  实测就已经不一致（见上）。能声明的只有"**契约成立、分数落盘、谁判的可查**"。
+- **判断质量仍未定标**：换了尺子之后，"这个 relevance 值对不对"没有金标准可校。要做的是
+  `quality_eval.py sample` 抽 50 篇人工标一次（欠着的旧账），而不是拿三家模型互相投票当答案。
+- 另一条教训（与代码无关但值得留）：那封自称给 $25 额度的推广邮件里，产品（Drex / nace.ai）
+  在 OpenRouter 的 **466 个模型里不存在**，账号里也**没有**积分。核实靠官方接口，不靠邮件。
+
 ## D-119: 日报的排期形状：跑"昨天"、允许补跑、抓之前并发预热正文缓存
 
 **Status:** Active（2026-10-16 落地；本机任务 `WeFlow Daily` 每日 08:20 跑 `pipeline.py --yesterday

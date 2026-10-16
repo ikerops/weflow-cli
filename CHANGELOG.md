@@ -19,6 +19,49 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **A Jev-like decision model that works from this region is one config line away.** `judgeProvider` now
+  selects among three transports for the *whole* decision layer (the daily's topic/relevance/inclusion
+  judgement, search reranking, reply debt, drafted replies and route-card term selection all share one
+  client): `native` (unchanged default), **`chat`** - the conversational model already configured for
+  summaries (`aiBaseUrl` relay / `aiModel` / `deepseekApiKey`), so it needs **no new vendor and no new
+  key** - and `openrouter` (a new encrypted `openrouterApiKey` plus `openrouterJudgeModel`, default
+  `typesafe/jev-router`). The native endpoint is region-blocked here (**HTTP 451**), and the failure shape
+  is silence rather than an error - 0 of 12,542 articles over the last 40 complete days carry a
+  `relevanceScore` - so the point of the switch is to route around a block, not to add a vendor.
+  Measured with the same prompt and the same validators against one real article: **`deepseek-chat`
+  passes in 1.0 s** (1,649 prompt + 69 completion tokens, cost on the order of ¥1/day for 500 articles),
+  `deepseek-reasoner` in 7.2 s, `qwen-plus` in 2.3 s.
+  **A passing contract is not the same judgement**: `deepseek-chat` scored that article relevance 1 with
+  an inclusion probability of 0.15 while `qwen-plus` scored it 2 and 0.85 - and the report's thresholds
+  were set against Jev, so switching judges means switching rulers. That is why the raw scores and
+  `usage.model` are stored; it also immediately paid off, since the served model for a `deepseek-chat`
+  request came back as **`deepseek-flash`**.
+
+
+- **The decision model has a second transport, the region block is now a measured fact rather than a
+  guess, and the switch that uses it ships off.** `api.typesafe.ai` answers **HTTP 451 "not available in
+  your region"** from this machine, and the failure shape is silence rather than an error: of 12,542
+  articles across the last 40 complete days, **0** carry a `relevanceScore` - and the same client serves the
+  reranker, reply debt, drafted replies and route-card term selection, so the whole layer degrades together.
+  New config: `judgeProvider` (`native` default / `openrouter`), `openrouterApiKey` (encrypted at rest) and
+  `openrouterJudgeModel` (default `typesafe/jev-router`). One switch replaces the layer, which is exactly why
+  **the default stays `native`**.
+  **The region filter is per model, not per site** (measured): `typesafe/jev-router` and `:free` models pass
+  from here, while `openai/gpt-4o-mini` returns **403 "This model is not available in your region."** - so a
+  model swap has to be re-tested on the machine that will use it.
+  The contract moves to our side (the native endpoint returns structured answers; a chat model has to be
+  *asked* for them), so the prompt and four validators live in `jev_client.py` and drift raises `JevError`
+  instead of producing a plausible-looking default - including the two shapes that used to fail *quietly*:
+  `noul` arriving as a boolean (once read as "no" for every question) and `score` arriving as a string
+  (which raised `ValueError`, something the callers' `except JevError` could not catch). Cost is measured:
+  **$0.014** for one article with four topic choices on a call the router sent to `x-ai/grok-4.7` (1,535
+  reasoning tokens), and since the router chooses a different upstream per call, the worst case is what has
+  to be budgeted (**~$7 for a 500-article day**); `max_tokens` does **not** cap it. Four failures now say
+  four different things because they need four different fixes: **402** = credits, **403 + "region"** =
+  change the model (changing the key does nothing), **401** = auth, **empty content** = reasoning ate the
+  budget. **Off by default, and not usable on the key tested here**: `/credits` reports `total_credits: 0`
+  and calls are refused with 402.
+
 - **The daily report can now be scheduled to run itself, and it knows what "yesterday" means.**
   `daily` (and the `pipeline.py` it drives) gained `--yesterday`. A scheduled run has to be *the
   previous day*, not "today": WeChat accounts keep publishing until midnight, so a same-evening run

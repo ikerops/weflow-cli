@@ -903,6 +903,66 @@ def get_typesafe_key(config=None) -> str:
         return ''
 
 
+def get_openrouter_key(config=None) -> str:
+    """读取 OpenRouter 的 key（决策模型的第二条通路，D-120），自动解密 lock: 前缀。
+
+    与 `get_typesafe_key` 逐字同一条规矩：**跨机器拷配置时表现为"没配"，不是崩**。
+    解密失败回空串之后，`create_client()` 会返回 None，调用方按老路退回 ——
+    这是"这条路没配好"的**安全**失效方向。
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return ''
+    try:
+        return decrypt_lock(config.get('openrouterApiKey', ''))
+    except Exception:
+        return ''
+
+
+def get_judge_provider(config=None) -> str:
+    """决策模型走哪条通路：`native`（默认）、`chat`（国内对话模型）或 `openrouter`。
+
+    **默认必须是 native**：这个开关存在的意义是"本机原生被地区封锁时换条路"，
+    而不是替所有用户改行为。取值不认识时也回 native —— 打错的配置项不该把判断整层关掉。
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return 'native'
+    value = str((config or {}).get('judgeProvider') or '').strip().lower()
+    return value if value in ('native', 'chat', 'openrouter') else 'native'
+
+
+def get_chat_endpoint(config=None):
+    """`judgeProvider=chat` 时该往哪个 (base_url, model) 发 —— 与"中转站"同一条口径。
+
+    故意只做一件事：**委托 `_custom_endpoint()`**。那个函数是 `aiBaseUrl`/`aiModel` 的权威读法
+    （base 与 model 成对出现），判断器另写一份就会在"只配了 base 没配 model"这类组合上分叉，
+    而分叉的表现是"发去了错的端点"——不报错、只是判断质量变了。没配 `aiBaseUrl` 时返回 (None, None)。
+    """
+    try:
+        return _custom_endpoint()
+    except Exception:
+        return None, None
+
+
+def get_openrouter_model(config=None) -> str:
+    """OpenRouter 上用的模型 id（默认 `typesafe/jev-router`，即 TypeSafe 发布的决策模型）。
+
+    ⚠️ **地区限制是逐模型的**（实测 2026-10-17）：`typesafe/jev-router` 与 `:free` 模型能通，
+    付费通用模型（`openai/gpt-4o-mini`）在本地区返回 403。换模型必须重测，见 D-120。
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return ''
+    return str((config or {}).get('openrouterJudgeModel') or '').strip()
+
+
 # ======================================================================
 # Markdown / Frontmatter
 # ======================================================================

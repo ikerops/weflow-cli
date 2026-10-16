@@ -23,6 +23,7 @@
 """
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -100,6 +101,122 @@ def _check_choice(key, question, answer):
             raise JevError('%s：choice=%r 不是概率的 argmax（%r 才是）——'
                            '这种情况最危险，它看起来是个正常答案'
                            % (key, picked, top))
+
+
+# ===== OpenRouter（第二条决策模型通路，D-120）=====
+#
+# **为什么需要它**：原生 `api.typesafe.ai` 在本机所在地区被挡（实测 HTTP 451
+# "not available in your region"），于是整层判断静默退化——最近 40 个完整天里
+# 0 篇带 relevanceScore。OpenRouter 上 TypeSafe 把同一个决策模型发布成了
+# `typesafe/jev-router`，从这里能通（实测 200）。
+#
+# ⚠️ **地理限制是逐模型的**（实测 2026-10-17）：
+#   · `typesafe/jev-router` → 通；
+#   · `:free` 的模型 → 通（零成本，但免费额度 50 次/天）；
+#   · 付费通用模型（如 `openai/gpt-4o-mini`）→ **HTTP 403 "This model is not available
+#     in your region."**，失败在路由的 "Gate Endpoints with Geo Restrictions" 一步。
+#   所以换模型时这条路必须重测，不能假定"能调一个就能调所有"。
+OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
+OPENROUTER_ENDPOINT = OPENROUTER_BASE + '/chat/completions'
+OPENROUTER_MODELS_ENDPOINT = OPENROUTER_BASE + '/models'
+# 国内端点：这两条是本机实测能通、且都已有 key 的（D-120）。DeepSeek 是默认选择：
+# 1.0 秒/篇、key 已在配置里、无需新厂商，成本量级 ¥1/天（500 篇）。
+DEEPSEEK_BASE = 'https://api.deepseek.com/v1'
+DASHSCOPE_BASE = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+OPENROUTER_DEFAULT_MODEL = 'typesafe/jev-router'
+# OpenRouter 的两个归属头（可选，但官方文档建议带；不含任何用户数据）。
+OPENROUTER_REFERER = 'https://github.com/zhuobichen/weflow-cli'
+OPENROUTER_TITLE = 'weflow-cli'
+# 预算给得**大**是有原因的：jev-router 会路由到推理模型（实测 `x-ai/grok-4.7`、
+# `z-ai/glm-5.3-flash`），推理 token 会把预算吃光、正文留空。实测 max_tokens=800 时
+# 一个免费推理模型 finish_reason=length、content 为空 —— 那不是"模型不会"，是预算给少了。
+# 反过来，这个值也是 OpenRouter 预检额度的依据（额度不足会 402 并报"你只能负担 N tokens"）。
+OPENROUTER_MAX_TOKENS = 4000
+
+
+def _check_score(key, question, answer):
+    """`score` 答案必须是数字（`score_to_relevance` 会拿它取整索引）。
+
+    没有这一条会怎样：`score` 缺失时 `score_to_relevance` 抛的是 `JevError('缺少 score')`，
+    但一个**字符串**分数（模型回 "高"）会一路走到 `int(float('高'))` 抛 `ValueError`——
+    调用方的 `except JevError` 接不住，整天日报挂掉。所以在这里挡住。
+    """
+    if question.get('type') != 'score':
+        return
+    value = answer.get('score')
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise JevError('%s：score 答案里的 score 不是数字：%r' % (key, value))
+
+
+def _check_noul(key, question, answer):
+    """`noul` 答案必须是 [0,1] 的概率 —— **不是布尔**。
+
+    仓库里踩过同型的坑（D-034 附近）：把 noul 的浮点当布尔读，每个问题都读成"否"，
+    而输出还把责任推给模型。所以这里既挡 `true/false`，也挡越界的数。
+    """
+    if question.get('type') != 'noul':
+        return
+    value = answer.get('noul')
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise JevError('%s：noul 答案是概率（0~1 的小数），不是布尔：%r' % (key, value))
+    if not 0.0 <= float(value) <= 1.0:
+        raise JevError('%s：noul 概率不在 [0,1]：%r' % (key, value))
+
+
+def build_openrouter_prompt(state, questions):
+    """把类型化的问题渲染成一段 chat 提示，要求**只输出一个 JSON 对象**。
+
+    形状必须与原生 `systemone` 的 answers 一致，因为下游七个调用方读的是同一套键：
+    `choice` → `{probabilities, choice}`、`score` → `{score}`、`noul` → `{noul}`（概率）。
+    渲染的是**同一份** `questions`（含 criteria 与判据文本），所以换通路不换判据。
+    """
+    lines = ['你是判断器。读下面的材料，逐题作答，**只输出一个 JSON 对象**：',
+             '不要解释、不要 markdown 代码块、不要在 JSON 前后加任何其它字。', '', '题目（每题都要答，键名照抄）：']
+    shape = []
+    for name, question in (questions or {}).items():
+        kind = (question or {}).get('type')
+        instructions = (question or {}).get('instructions') or ''
+        if kind == 'choice':
+            criteria = (question or {}).get('criteria') or {}
+            lines.append('- %s（choice）：%s' % (name, instructions))
+            lines.append('  候选（probabilities 的键必须就是这些，且和等于 1）：')
+            for option, criterion in criteria.items():
+                lines.append('    · %s：%s' % (option, criterion))
+            shape.append('"%s": {"probabilities": {%s}, "choice": "<概率最大的候选>"}'
+                         % (name, ', '.join('"%s": 0.0' % o for o in criteria)))
+        elif kind == 'score':
+            criteria = (question or {}).get('criteria') or []
+            lines.append('- %s（score）：%s' % (name, instructions))
+            for index, criterion in enumerate(criteria):
+                lines.append('    %d = %s' % (index, criterion))
+            shape.append('"%s": {"score": 0}' % name)
+        elif kind == 'noul':
+            lines.append('- %s（noul）：%s' % (name, instructions))
+            lines.append('    noul 是"该陈述成立"的概率（0~1 的小数），**不是** true/false。')
+            shape.append('"%s": {"noul": 0.0}' % name)
+    lines += ['', '输出结构（严格照抄形状，数字自己填）：',
+              '{%s}' % ', '.join(shape),
+              '', '规则：probabilities 的键集与候选完全一致、和等于 1；choice 必须等于概率最大的键；',
+              'score 按上面的刻度取值；noul 是 0~1 的小数。', '', '材料：', str(state)]
+    return '\n'.join(lines)
+
+
+def _parse_json_object(content, label='响应'):
+    """从模型输出里取一个 JSON 对象。取不到就抛 `JevError`，**不猜、不修补**。"""
+    text = (content or '').strip()
+    if not text:
+        raise JevError('%s 里没有正文（空 content）——常见原因是推理 token 吃光了预算，'
+                       '把 OPENROUTER_MAX_TOKENS 调大再试' % label)
+    start, end = text.find('{'), text.rfind('}')
+    if start < 0 or end <= start:
+        raise JevError('%s 里没有 JSON 对象：%s' % (label, text[:200]))
+    try:
+        parsed = json.loads(text[start:end + 1])
+    except ValueError as error:
+        raise JevError('%s 不是合法 JSON（%s）：%s' % (label, error, text[start:end + 1][:200]))
+    if not isinstance(parsed, dict):
+        raise JevError('%s 的 JSON 顶层不是对象' % label)
+    return parsed
 
 
 def resolve_key(explicit='', config=None):
@@ -286,9 +403,177 @@ class JevClient:
         }
 
 
-def create_client(api_key='', model=DEFAULT_MODEL, timeout=120, config=None):
-    """拿到 key 就返回客户端，没有就返回 None（调用方据此走老路）。"""
+class ChatJevClient(JevClient):
+    """**用任意 OpenAI 兼容的对话模型**充当决策模型（默认指 OpenRouter）。
+
+    与 `JevClient` **同一个鸭子类型**（`decide` / `decide_article` / `last_model`），所以
+    日报判断、检索重排、草稿回复、欠话台账那些调用方不需要知道换了通路。差别只有两处：
+
+      · 传输是 chat/completions（原生是 TypeSafe 自己的 `systemone` 端点）；
+      · 契约由**我们**在提示里写死、再由 `_check_choice` / `_check_score` / `_check_noul`
+        逐条验（原生是服务端直接给结构化答案，客户端只做校验）。多出来的这条"自己保证契约"
+        正是**换通路真正的代价**：它不该被藏起来，所以提示词与校验都在这里，且漂移会当场抛。
+
+    **base_url 可换，是这条路的核心价值**：同一个实现既能指 OpenRouter，也能指**中国地区能通的**
+    国内端点（`https://api.deepseek.com/v1`、`https://dashscope.aliyuncs.com/compatible-mode/v1`）。
+    【实测 2026-10-17】契约都对得上：
+
+      · `typesafe/jev-router`（OpenRouter）→ 过；· `openai/gpt-4o-mini` → **403 地区封锁**；
+      · `deepseek-chat` → 过（**1.0s**/篇）；· `deepseek-reasoner` → 过（7.2s）；
+      · `qwen-plus`（百炼）→ 过（2.3s）。
+
+    ⚠️ **契约一致不等于判断一致**：同一篇文章上 `deepseek-chat` 给 relevance=1 / noul=0.15，
+    `qwen-plus` 给 2 / 0.85。换判断器会改变取值分布，而下游阈值是对着 Jev 拍的——
+    这就是为什么原始分与 `usage.model` 都要落盘。
+    """
+
+    def __init__(self, api_key, model=OPENROUTER_DEFAULT_MODEL, timeout=120,
+                 max_tokens=OPENROUTER_MAX_TOKENS, base_url=OPENROUTER_BASE,
+                 extra_headers=None, provider='openrouter'):
+        super().__init__(api_key, model=model, timeout=timeout)
+        self.base_url = (base_url or OPENROUTER_BASE).rstrip('/')
+        self.extra_headers = dict(extra_headers or {})
+        self.max_tokens = max_tokens
+        # 记录自己是谁，方便落盘/报错时区分"哪条通路判的"。
+        self.provider = provider
+
+    def _endpoint(self):
+        return self.base_url + '/chat/completions'
+
+    def _post_once(self, url, payload=None):
+        """与原生同形，多带一份可配的头（OpenRouter 的归属头由预设给），并把**地区封锁**单独报出来。"""
+        data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        headers = {'Content-Type': 'application/json',
+                   'Authorization': f'Bearer {self.api_key}'}
+        headers.update(self.extra_headers)
+        request = urllib.request.Request(
+            url, data=data, method='POST' if data else 'GET', headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            detail = ''
+            try:
+                detail = error.read().decode('utf-8', 'replace')[:400]
+            except Exception:
+                pass
+            # 403 在 OpenRouter 上有**两种**含义，混在一起会让人以为是 key 不对：
+            #   "not available in your region"（地区封锁，换模型才有用）vs 鉴权被拒。
+            if error.code == 403 and 'region' in detail.lower():
+                raise JevError(f'这个模型在当前地区不可用（HTTP 403）：{detail}')
+            if error.code == 402:
+                # 这条最容易被误读成"模型坏了"。实际是**预检额度**：OpenRouter 按
+                # max_tokens×单价 估一个上界，额度不够就拒，并告诉你负担得起多少。
+                raise JevError(f'OpenRouter 余额/额度不足（HTTP 402）：{detail}')
+            if error.code in (401, 403):
+                raise JevError(f'鉴权被拒（HTTP {error.code}）。key 可能不对或已过期：{detail}')
+            failure = JevError(f'HTTP {error.code}: {detail}')
+            failure.retryable = error.code in RETRY_STATUS
+            raise failure
+        except urllib.error.URLError as error:
+            failure = JevError(f'连不上 {url}: {error.reason}')
+            failure.retryable = True
+            raise failure
+
+    def models(self):
+        """OpenRouter 的模型清单（id 列表）。换地区/换模型时先在这里确认名字。
+
+        只有 OpenRouter 有这条接口；国内端点没有同形的清单，所以命中非 OpenRouter 时返回空列表
+        而不是报错 —— 调用方（`jev_probe`）本来就只用它做"名字写错了吗"的自检。
+        """
+        if 'openrouter.ai' not in self.base_url:
+            return []
+        body = self._post(OPENROUTER_MODELS_ENDPOINT)
+        return [m.get('id') for m in (body.get('data') or []) if isinstance(m, dict)]
+
+    def decide(self, state, questions):
+        """返回 `(answers, usage)`，形状与原生一致；**任何契约不成立都抛 `JevError`**。
+
+        `usage` 多带一个 `cost`（OpenRouter 直接回报美元成本，原生没有这个字段），
+        并把 OpenRouter 的 token 键名对齐成原生那套（`prompt_tokens`→`input_tokens`）——
+        `decide.py` 与 `jev_probe.py` 读的是后一个名字，名字对不上会让成本统计静默变成 0。
+        """
+        prompt = build_openrouter_prompt(state, questions)
+        body = self._post(self._endpoint(), {
+            'model': self.model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0,
+            'max_tokens': self.max_tokens,
+        })
+        choices = body.get('choices') or [{}]
+        message = (choices[0] or {}).get('message') or {}
+        answers = _parse_json_object(message.get('content'), 'chat 响应')
+        for key, question in (questions or {}).items():
+            if not isinstance(question, dict):
+                continue
+            answer = answers.get(key)
+            if not isinstance(answer, dict):
+                raise JevError('%s：响应里缺这一题的答案（%r）——契约漂移' % (key, answer))
+            _check_choice(key, question, answer)
+            _check_score(key, question, answer)
+            _check_noul(key, question, answer)
+        usage = dict(body.get('usage') or {})
+        if 'prompt_tokens' in usage and 'input_tokens' not in usage:
+            usage['input_tokens'] = usage['prompt_tokens']
+        if 'completion_tokens' in usage and 'output_tokens' not in usage:
+            usage['output_tokens'] = usage['completion_tokens']
+        if body.get('model'):
+            # 路由到谁**每次都可能不同**（实测 grok-4.7 / glm-5.3-flash），所以落盘这个值
+            # 才有意义：不然"线上跑的和测过的不是同一个东西"永远不可见。
+            usage['model'] = body['model']
+            self.last_model = body['model']
+        return answers, usage
+
+
+def create_client(api_key='', model='', timeout=120, config=None):
+    """拿到 key 就返回客户端，没有就返回 None（调用方据此走老路）。
+
+    走哪条通路由配置 `judgeProvider` 决定，**默认 `native`**（与引入这个开关之前完全一致）：
+
+    · `native`     → `api.typesafe.ai`（本机被地区封锁，见 D-120）；
+    · `chat`       → **中国地区能通的对话模型**，走配置里已有的那套（`aiBaseUrl` 中转站 /
+      `aiModel` / `deepseekApiKey`）——一句话就能打开，不需要新厂商、新 key。
+      实测 `deepseek-chat` 1.0 秒/篇且契约通过，成本量级 ¥1/天；
+    · `openrouter` → OpenRouter 的 chat/completions，模型取 `openrouterJudgeModel`
+      （默认 `typesafe/jev-router`），key 取 `openrouterApiKey`。
+    """
+    judge_provider = ''
+    openrouter_key = openrouter_model = ''
+    chat_key = ''
+    chat_base = chat_model = None
+    try:
+        import _utils
+        judge_provider = (getattr(_utils, 'get_judge_provider')(config) or '').strip().lower()
+        openrouter_key = (getattr(_utils, 'get_openrouter_key')(config) or '').strip()
+        openrouter_model = (getattr(_utils, 'get_openrouter_model')(config) or '').strip()
+        # 中转站口径与"配置了 aiBaseUrl 的对话模型"同源（`_utils.get_chat_endpoint` 委托
+        # `_custom_endpoint`）：只配了 base 没配 model 时它会补 `deepseek-chat`。
+        chat_base, chat_model = getattr(_utils, 'get_chat_endpoint')(config) or (None, None)
+        chat_key = (getattr(_utils, 'get_api_key')(config) or '').strip()
+    except Exception:
+        # 配置读不出来就当没配（与 `get_typesafe_key` 同一态度：跨机器拷配置不该崩）。
+        # `judge_provider` 若已经读到而这里抛了，后面的分支会因为没有 key 返回 None ——
+        # 那是安全的方向（退回老路），不是静默用错通路。
+        pass
+    if judge_provider == 'chat':
+        if not chat_key:
+            print('[WARN] judgeProvider=chat 但没配对话模型的 key（deepseekApiKey）：'
+                  '决策模型这次不可用，判断将退回 LLM 路径', file=sys.stderr)
+            return None
+        # 配了 `aiBaseUrl`（中转站）就用它，否则直连 DeepSeek。
+        return ChatJevClient(chat_key, model=model or chat_model or 'deepseek-chat',
+                             base_url=chat_base or DEEPSEEK_BASE, timeout=timeout, provider='chat')
+    if judge_provider == 'openrouter':
+        if not openrouter_key:
+            print('[WARN] judgeProvider=openrouter 但没配 openrouterApiKey：'
+                  '决策模型这次不可用，判断将退回 LLM 路径', file=sys.stderr)
+            return None
+        return ChatJevClient(openrouter_key,
+                             model=model or openrouter_model or OPENROUTER_DEFAULT_MODEL,
+                             timeout=timeout, provider='openrouter',
+                             extra_headers={'HTTP-Referer': OPENROUTER_REFERER,
+                                            'X-Title': OPENROUTER_TITLE})
     key = resolve_key(api_key, config)
     if not key:
         return None
-    return JevClient(key, model=model, timeout=timeout)
+    return JevClient(key, model=model or DEFAULT_MODEL, timeout=timeout)

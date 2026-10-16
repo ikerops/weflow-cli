@@ -667,6 +667,66 @@ weflow-cli search "..." --line all         # 两条线一起（默认只搜文�
   掉了**（严格相关 40% → 30%，宽松 68% → 64%），recall@5 也掉 0.03 —— 因为这份语料里的"重复"多是
   **多个号转载同一件事**，MMR 把有用的重复一起删了。所以默认关；要"同一件事只留一条"用默认的
   **同文本折叠**（免费、不损信息），别用 MMR。
+### 决策模型走哪条通路（地区限制 + OpenRouter）
+
+判断这一层（日报的主题/相关度、检索重排、欠话台账、草稿回复、路由选词）用的是**同一个**客户端，
+所以它换通路是**一处开关替掉整层**：
+
+```powershell
+weflow-cli config show                                     # 看当前值（没有 config get，是 show）
+weflow-cli config set judgeProvider chat                   # 国内对话模型（推荐，见下）
+weflow-cli config set judgeProvider openrouter             # 或走 OpenRouter
+weflow-cli config set openrouterJudgeModel typesafe/jev-router   # 默认就是这个
+# key 用 set-env 设，别让密钥出现在命令参数里：
+$env:OPENROUTER_KEY = '<key>'; weflow-cli config set-env openrouterApiKey OPENROUTER_KEY
+```
+
+**推荐 `judgeProvider=chat`**：它复用配置里**已有的**对话模型（`aiBaseUrl` 中转站 / `aiModel` / `deepseekApiKey`），
+所以不需要新厂商、新 key，一句话就打开。本机实测（2026-10-17，同一篇真实文章）：
+
+| 模型 | 延迟 | 契约 | relevance / 收录概率 |
+| --- | --- | --- | --- |
+| **`deepseek-chat`** | **1.0 s** | ✅ 通过 | 1 / 0.15 —— 成本量级 **¥1/天**（500 篇） |
+| `deepseek-reasoner` | 7.2 s | ✅ 通过 | 1 / 0.05 |
+| `qwen-plus`（百炼） | 2.3 s | ✅ 通过 | **2 / 0.85** |
+| `qwen-turbo` | — | HTTP 429（账号速率限制） | — |
+
+⚠️ **契约一致不等于判断一致**：同一篇文章 `deepseek-chat` 与 `qwen-plus` 给的相关度与收录概率
+差得很远（0.15 vs 0.85），而下游阈值是对着 Jev 拍的。所以换判断器要当成**换了一把尺子**：
+`relevanceScore` / `includeScore` 与 `usage.model` 都落盘，就是为了这种时候能看出"是谁判的"。
+
+⚠️ **地区限制是「按模型」的，不是「按网站」的 —— 这是 2026-10-17 在本机实测的**：
+
+| 目标 | 结果 |
+| --- | --- |
+| `api.typesafe.ai`（原生 Jev） | **HTTP 451** "not available in your region" —— 本机一直是死的 |
+| `typesafe/jev-router`（OpenRouter 上同一个模型） | ✅ 通 |
+| `:free` 结尾的免费模型 | ✅ 通（零成本；免费额度 **50 次/天**，一天 500 篇只够约 10%） |
+| `openai/gpt-4o-mini` 等付费通用模型 | **HTTP 403** "This model is not available in your region." |
+
+所以**换模型必须在本机重测一次**（`python scripts/jev_probe.py --limit 1 --yes` 或任何一次真实调用），
+不能假定"能调一个就能调所有"。
+
+**代价（实测，不是估算）**：一篇真实文章 + 4 个候选主题的一次调用花 **$0.014**（当时路由到 `x-ai/grok-4.7`），
+其中推理 token 1535。**路由到谁每次都可能不同**（另一次是 `z-ai/glm-5.3-flash`），所以要按最坏估：
+**一天 500 篇 ≈ $7/天**。`max_tokens` 管不住这个成本。想压价只有两条路：换更便宜的模型，或只对一部分文章用。
+
+**四种失败要分开读**（它们的处置完全不同）：
+
+| 报错 | 含义 | 怎么办 |
+| --- | --- | --- |
+| 402 额度不足 | OpenRouter 按 `max_tokens × 单价` 预检，余额不够就拒 | 充值，或换免费模型 |
+| 403 + "region" | 这个模型在本地区不可用 | **换模型**（换 key 没用） |
+| 401 鉴权被拒 | key 不对/过期 | 换 key |
+| 空正文（`content` 为空） | 推理 token 吃光了预算 | 调大 `OPENROUTER_MAX_TOKENS` |
+
+**不许从这条路推断"与原生判断一致"**：原生在本机调不通，**没法对拍**。能声明的只有
+"契约成立（过了仓库自己的 `_check_choice`）、分数落盘、成本可查"。
+
+> 旁注：曾有一封自称来自 `nace.ai`、送 $25 额度、推销"最快的决策模型 Drex"的邮件。
+> 实测：OpenRouter 的 **466 个模型里没有** `drex` / `nace`，那个 key 的账号 `total_credits` 是 **0**。
+> 这类邮件的价值判断别靠邮件本身。
+
 ### 检索质量怎么量（评测台）
 
 改了检索（换模型、调窗口、动排名）之后，"变好还是变坏"要用同一批题量，不能靠手工试问：
