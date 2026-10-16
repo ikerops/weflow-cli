@@ -19,6 +19,28 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **The daily report can now be scheduled to run itself, and it knows what "yesterday" means.**
+  `daily` (and the `pipeline.py` it drives) gained `--yesterday`. A scheduled run has to be *the
+  previous day*, not "today": WeChat accounts keep publishing until midnight, so a same-evening run
+  silently ships a truncated day that nobody ever goes back to fix - while "yesterday" is
+  **time-insensitive** (any wake-up after midnight reads the same complete data, so a machine that
+  was asleep only needs to be allowed to start late, not have its date re-derived). Passing both
+  `--date` and `--yesterday` is an error rather than a silent pick, because then "which day" has no
+  single answer. `OPERATIONS.md` now carries a corrected recipe for the scheduled task - it uses
+  `Register-ScheduledTask` with `-StartWhenAvailable`, because `schtasks /create` cannot express
+  "start late if you missed it", and without that a sleeping machine means a **silently** missing
+  day.
+
+- **`daily --prefetch-bodies [n]` (default off) fetches the day's article bodies concurrently
+  *before* the fetch phase.** That phase is serial and sleeps 8-12 s for every article that misses
+  the body cache - deliberate throttling, and on the order of an hour for a 450-article day - while
+  a **cache hit neither connects nor sleeps**. Warming the cache first turns the fetch phase into
+  cache hits. The **number of requests to upstream is unchanged**; only the window they are spread
+  over changes, which is exactly why this is opt-in rather than the new default. The scheduled task
+  uses it, so a report that used to hold the machine for an hour finishes in a fraction of that.
+  (Related: the index does **not** read this cache - measured no gain, see `docs/DECISIONS.md`
+  D-118 - so the cache serves the display path (`search --with-text`) and this speed-up only.)
+
 ## 1.12.0
 
 - **One word per question, across every artifact that describes exported media.** The auxiliary `*_media.json`

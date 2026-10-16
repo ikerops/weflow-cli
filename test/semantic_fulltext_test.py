@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
@@ -116,6 +117,95 @@ class FullTextTests(unittest.TestCase):
         self.assertEqual(text, '我直接把那个pdf导出成图的')
         self.assertIsNone(path)
         self.assertIsNone(url)
+
+
+class BestBodyTests(unittest.TestCase):
+    """`best_article_body` = **展示路径**（`--with-text`）取正文：日报 md 与正文缓存**取更长的那份**。
+
+    为什么钉：日报 md 里正文中位只有 259 汉字，而日报自己抓到的完整正文缓存里是 2,063 汉字 ——
+    要给人看的那份当然取全的。取错（只看 md）不会报错，只会让人以为"知识库只存了摘要"。
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix='kb-body-'))
+        self._saved = ss.OUTPUT_ROOT
+        ss.OUTPUT_ROOT = str(self.root)
+
+    def tearDown(self):
+        ss.OUTPUT_ROOT = self._saved
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def md(self, body):
+        return '---\ntitle: "标题"\nurl: "%s"\n---\n\n# 标题\n\n%s\n' % (URL, body)
+
+    def test_takes_the_longer_one(self):
+        with mock.patch.object(ss, '_fetch_cache_path',
+                               lambda url: self._cache_path(URL, '缓存里的完整正文。' * 40)):
+            body, url = ss.best_article_body(self.md('md 里的一小段正文，够六个字。'))
+        self.assertIn('缓存里的完整正文', body)
+        self.assertEqual(url, URL)
+
+    def test_falls_back_to_md_without_cache(self):
+        with mock.patch.object(ss, '_fetch_cache_path', lambda url: self.root / '不存在.md'):
+            body, url = ss.best_article_body(self.md('只有 md 这一份正文，够六个字了。'))
+        self.assertIn('只有 md 这一份正文', body)
+        self.assertEqual(url, URL)
+
+    def test_no_url_means_md_only(self):
+        body, url = ss.best_article_body('---\ntitle: "无 url"\n---\n\n# 无 url\n\n没有 url 的正文，够六个字。\n')
+        self.assertIn('没有 url 的正文', body)
+        self.assertIsNone(url)
+
+    def test_respects_the_limit(self):
+        with mock.patch.object(ss, '_fetch_cache_path',
+                               lambda url: self._cache_path(URL, '长正文。' * 2000)):
+            body, _url = ss.best_article_body(self.md('短。'), 300)
+        self.assertLessEqual(len(body), 300)
+
+    def _cache_path(self, url, body):
+        path = self.root / '.cache' / 'fetch' / 'fake.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding='utf-8')
+        return path
+
+
+class IndexBodyTests(unittest.TestCase):
+    """建索引用**哪份**文本 —— 答案是"只用日报 md 那份摘录"，正文缓存**不进去**。
+
+    为什么反向钉（测试是防"帮忙"改回去的）：2026-10-16 我把索引改成"与正文缓存取更长的"，
+    想用完整正文抬高召回；实测**没有增益**（DECISIONS D-118）：100 条自造题里唯一中立的一组
+    （标题，两份文本都有）持平，两组碎片题各自跟着"题是从谁的文本里抠的"走、方向相反 ——
+    自造题裁判不了这件事。而重建索引要花钱花时间，所以这条留在 500 字摘录。
+    这条测试的用处：它红 = 有人又悄悄改了索引吃哪份文本，那时必须带上新证据。
+    """
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix='kb-index-body-'))
+        self._saved = ss.OUTPUT_ROOT
+        ss.OUTPUT_ROOT = str(self.root)
+
+    def tearDown(self):
+        ss.OUTPUT_ROOT = self._saved
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_索引吃md摘录而不是正文缓存(self):
+        rel = '2026-10-02/新闻/某号-文章.md'
+        f = self.root / 'biz-daily' / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text('---\ntitle: "标题"\nurl: "%s"\n---\n\n# 标题\n\n'
+                     '这是一小段摘要，其实只有几十个字，是日报写进 md 的那份。\n' % URL,
+                     encoding='utf-8')
+        cache = self.root / '.cache' / 'fetch' / 'fake.md'
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text('缓存里的完整正文段落。' * 300, encoding='utf-8')
+        with mock.patch.object(ss, '_fetch_cache_path', lambda url: cache):
+            items = ss.collect_articles(article_days=1)
+        self.assertEqual(len(items), 1, items)
+        text = items[0]['text']
+        self.assertIn('这是一小段摘要', text)
+        self.assertNotIn('缓存里的完整正文段落', text,
+                         '索引不该吃正文缓存：实测无增益（DECISIONS D-118）')
+        self.assertLessEqual(len(text), 500 + 60)          # 标题 + 500 字摘录预算
 
 
 class FetchMissingTests(unittest.TestCase):

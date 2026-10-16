@@ -13,6 +13,7 @@
   python scripts/pipeline.py --date 2026-06-09 --skip-classify
 """
 import sys, os, subprocess, time, shutil
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +41,10 @@ def main():
     parser.add_argument('--engine', default='deepseek',
                         help='AI 引擎: deepseek(默认) / claude / ollama / local')
     parser.add_argument('--date', help='日期 YYYY-MM-DD')
+    parser.add_argument('--yesterday', action='store_true',
+                        help='跑**昨天**（等价于 --date 昨天）。给计划任务用的：公众号发到 24:00 才停，'
+                             '当晚跑的那一天永远不全；而"跑昨天"与时刻无关 —— 机器当时在睡觉、'
+                             '起来补跑，结果完全相同（见 OPERATIONS「让它每天自己跑」）')
     parser.add_argument('--interest', default='AI', help='兴趣主题（默认 AI）')
     parser.add_argument('--wiki-limit', type=int, default=20, help='概念编译数量（默认 20）')
     parser.add_argument('--skip-classify', action='store_true', help='跳过后处理')
@@ -57,9 +62,19 @@ def main():
                              '注意：下游步骤（行动建议/概念编译/AI 报告）仍会用 LLM，'
                              '要全关请再加 --skip-classify --skip-ai-report')
     parser.add_argument('--ai-report-range', type=int, default=1, help='AI 报告覆盖最近 N 天（默认 1=仅当天）')
+    parser.add_argument('--prefetch-bodies', nargs='?', type=int, const=8, default=0, metavar='N',
+                        help='只转发给 biz_daily：Phase 1 之前先并发把这一天的正文抓进缓存'
+                             '（N=并发数，默认 8），让 Phase 1 走缓存命中、不再逐篇 sleep。'
+                             '450 篇约 75 分钟 → 秒级；对上游的请求次数不变（见 biz_daily.prefetch_bodies）')
     parser.add_argument('--source', action='append', default=[], metavar='NAME',
                         help='仅处理指定公众号，可重复或用逗号分隔')
     args = parser.parse_args()
+
+    if args.yesterday:
+        if args.date:
+            print('[ERROR] --date 与 --yesterday 不能同时给（前者是明确的一天，后者是"昨天"）')
+            sys.exit(1)
+        args.date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
 
     sys.path.insert(0, SCRIPTS_DIR)
     from _utils import load_config, get_api_key
@@ -109,6 +124,12 @@ def main():
                   % '、'.join(n for n, skipped in (('classify_daily（行动建议）', args.skip_classify),
                                                    ('compile_wiki（概念编译）', not args.with_wiki))
                               if not skipped))
+    if args.prefetch_bodies:
+        # 原样转发：`--prefetch-bodies` 不带数字时 biz_daily 用自己的默认并发数，
+        # 所以这里不加数字（免得两处默认值各写一份、迟早漂移）。
+        step1_args += ['--prefetch-bodies']
+        if args.prefetch_bodies != 8:            # 显式给了数字才转发数字
+            step1_args += [str(args.prefetch_bodies)]
     if not run_step('biz_daily — 抓取+摘要', step1_args):
         sys.exit(1)
 

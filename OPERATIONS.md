@@ -916,24 +916,46 @@ weflow-cli daily --dry-run --json     # 看它读到多少篇、准备处理哪�
 ```
 
 正常会打印当天扫到的文章数与一个 `{"success":true,"dryRun":true,...}`。读到几百篇就说明
-读取没问题，缺的只是一个触发。交给计划任务（与「WeFlow Health Check」同一套做法，
-不依赖任何编辑器或会话开着）：
+读取没问题，缺的只是一个触发。交给计划任务：
 
 ```powershell
-schtasks /create /tn "WeFlow Daily" ^
-  /tr "weflow-cli daily --yes" ^
-  /sc daily /st 08:20
+$py = 'C:\Users\<你>\AppData\Local\Programs\Python\Python311\python.exe'
+$action  = New-ScheduledTaskAction -Execute $py `
+  -Argument '<仓库>\scripts\pipeline.py --yesterday --prefetch-bodies'
+$trigger = New-ScheduledTaskTrigger -Daily -At 08:20
+Register-ScheduledTask -TaskName 'WeFlow Daily' -Action $action -Trigger $trigger `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew)
 ```
 
 - 查看：`Get-ScheduledTask -TaskName 'WeFlow Daily'`
 - 手动跑一次：`Start-ScheduledTask -TaskName 'WeFlow Daily'`
-- 上次结果：`schtasks /query /tn "WeFlow Daily" /fo LIST /v`
+- 上次结果：`(Get-ScheduledTaskInfo -TaskName 'WeFlow Daily').LastTaskResult`
+  （**`267009` 不是错误**，它是"任务正在运行"`0x41301`；`0` 才是成功。）
 
-几点要事先知道：
+几点要事先知道（每一条都是踩过的）：
 
-- **`--yes` 不能省**：机器模式下没有它就会停在确认门上（这是有意的——日报会调 AI、会写文件）。
+- **排期要用 `--yesterday`，不是"跑今天"**，理由只有一条但决定成败：公众号发到 24:00 才停，
+  所以**当晚跑的那一天永远不全**，而且以后没人会回头补它。反过来，"跑昨天"这个动作**与时刻无关** ——
+  00:00 之后的任何时间跑，读到的都是同一天的完整数据。于是"机器当时在睡觉"这个最常见的漏跑，
+  只要任务允许补跑就**结果完全相同**。
+  （`daily` 默认跑"今天"，所以必须显式给；`--date` 与 `--yesterday` 同时给会当场报错退出，
+  而不是替你选一个。）
+- **要 `-StartWhenAvailable`（所以用 `Register-ScheduledTask`，不是 `schtasks /create`）**：
+  `schtasks` 没有对应开关，它藏在任务 XML 的 `<StartWhenAvailable>` 里。没有它，
+  机器 08:20 在睡觉 = 这天**静默**没有日报。
+- **`--prefetch-bodies` 能把这一小时压成几分钟**：抓取阶段是**串行**的，每篇没命中缓存要
+  `sleep` 8–12 秒（节流是为了少打扰上游），450 篇就是约 75 分钟。而**命中缓存既不联网也不 sleep**，
+  所以这个开关在抓取之前先用 8 个并发（可带数字改）把当天正文全抓进缓存，抓取阶段于是全是缓存命中。
+  对上游的**请求次数一模一样**，区别只是从"一个多小时里慢慢发"变成"十几分钟里发完"——
+  这是个取舍（瞬时并发更高），所以**默认关**、要显式打开。
+- **任务跑的是 `scripts/pipeline.py`，不是 `weflow-cli`**：npm 全局那个包是**发布版**，
+  滞后于仓库；而且它一旦是构建产物，改完代码不 `npm run build` 就看不到改动（见
+  「改完没反应」那类问题）。python 层没有构建步骤，是同一份源码。人在终端里跑还是用
+  `weflow-cli daily --yesterday --prefetch-bodies --yes`，两者等价。
+- **`--yes` 不能省**（走 CLI 时）：机器模式下没有它就会停在确认门上（这是有意的——日报会调 AI、会写文件）。
 - **会花钱**：默认跑 AI（摘要/标签/简报）。想让它不出网、不花钱就用
-  `weflow-cli daily --yes --no-ai`；只要主题与相关度、不要摘要可用 `--no-summary`。
+  `--no-ai`；只要主题与相关度、不要摘要可用 `--no-summary`。
+  【未知】单价仓库里没有常量、客户端也不回 usage，所以**事先算不准**，只能看账单。
 - **没跑成留下的空目录不等于跑过了**：一个只有目录、没有 `README.md` / `.articles.json` /
   `index.html` 的日期**不算完成**，再跑一次不带日期的 `daily` 会先把它补上（D-011）。
   所以看到 `output/biz-daily/2026-09-22/` 这种空目录时，处理办法就是再跑一次，
@@ -948,8 +970,8 @@ schtasks /create /tn "WeFlow Daily" ^
 | --- | --- | --- |
 | README 开头 | `# 公众号日报` | `# 公众号文章 — <日期>（历史回填）` |
 | 内容 | AI 摘要 + 图片本地化 + `index.html` 阅读页 + 行动建议 | 只抓正文，**不下载图片、不调用模型** |
-| 成本 | 一天约 1 小时（含 8–12 秒/篇的节流）+ AI 费用 | 并发抓取，几分钟一天，**不花钱** |
-| 排期命令 | `schtasks /create /tn "WeFlow Daily" /tr "weflow-cli daily --yes" /sc daily /st 08:20` | `schtasks /create /tn "WeFlow Backfill" /tr "python <仓库>\scripts\backfill_articles.py --since <昨天> --until <昨天> --workers 4 --yes" /sc daily /st 08:20` |
+| 成本 | 一天约 1 小时（含 8–12 秒/篇的节流；**加 `--prefetch-bodies` 后抓取阶段只剩几分钟**）+ AI 费用 | 并发抓取，几分钟一天，**不花钱** |
+| 排期命令 | `pipeline.py --yesterday --prefetch-bodies`（见上「让它每天自己跑」） | `python <仓库>\scripts\backfill_articles.py --since <昨天> --until <昨天> --workers 4` |
 
 两条**可以并存**，但要知道区别：回填那条便宜得多、跑得快，代价是没有摘要/图片/网页。
 本机实测（2026-10-14）：归档里 359 天中只有 12 天是完整日报形态，其余都是回填形态——
@@ -959,6 +981,11 @@ schtasks /create /tn "WeFlow Daily" ^
 > `daily --date X` 会直接命中、不再联网、也不等节流。但**别把接力读成"那天就免费了"**——日报对
 > 每篇有 url 的文章都要抓完整正文，回填只抓"本地正文过短"的那些，所以 2026-10-13 那天 485 篇里
 > 只有 145 篇在缓存里。想强制重新抓正文用 `--no-fetch-cache`（两边同名同义：跳过"读"，成功仍写回）。
+>
+> **预热缓存有两条路，别搞混**：① `daily --prefetch-bodies` 在**它自己要处理的那一天**上先并发抓一遍
+> （推荐，见上「让它每天自己跑」）；② 回填时顺手抓（`backfill_articles.py`，但它的判据是"本地正文过短"，
+> 所以填不满）。**索引不吃这份缓存**——2026-10-16 量过"让索引吃完整正文"没有增益（D-118），
+> 这份缓存只服务展示路径（`search --with-text`）与"抓取阶段不 sleep"。
 
 #### 怎么看出某天"没做完"
 

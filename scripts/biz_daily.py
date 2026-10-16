@@ -64,6 +64,7 @@ FETCH_TIMEOUT = 15
 DEEPSEEK_TIMEOUT = 60
 FETCH_DELAY_MIN = 8   # 最小抓取间隔 (秒)
 FETCH_DELAY_MAX = 12  # 最大抓取间隔 (秒)
+PREFETCH_WORKERS = 8  # `--prefetch-bodies` 不带数字时的并发数（预热正文缓存，见 prefetch_bodies）
 
 # TOPICS 现在从 _utils 导入（见文件头的 import）——分类法只有一份定义，
 # 因为"散文写的枚举"已经漂过一次：这里曾硬编码五类，而 TOPICS 是六类。
@@ -666,6 +667,43 @@ def fetch_article_cached(url: str, use_cache: bool = True) -> tuple[str | None, 
     return body, False
 
 
+def prefetch_bodies(articles, workers=PREFETCH_WORKERS, log=None):
+    """**并发**把这一批文章的正文抓进缓存（`output/.cache/fetch/`），只抓不写盘。
+
+    为什么值得有：Phase 1 是**串行**的，而且未命中缓存时每篇要 `sleep` 8~12 秒（节流是为了
+    少打扰上游）——450 篇就是约 75 分钟。而**命中缓存既不联网也不 sleep**（见
+    `fetch_article_cached`），所以先把正文并发抓下来，Phase 1 就变成秒级。
+    对上游的**请求总次数完全相同**，区别只是把同样多的请求压进更短的时间窗 ——
+    这是一个显式取舍，所以默认**关**，由 `--prefetch-bodies` 打开。
+
+    失败**不抛也不报错退出**：Phase 1 还会再试一次（那里才是"这篇到底有没有正文"的判据）。
+    返回 `{'requested', 'ok'}`。
+    """
+    urls = []
+    for a in articles:
+        url = a.get('url')
+        if url and url not in urls:
+            urls.append(url)
+    if not urls:
+        return {'requested': 0, 'ok': 0}
+
+    def _one(url):
+        try:
+            body, _cached = fetch_article_cached(url)
+            return bool(body and body.strip())
+        except Exception:                     # noqa: BLE001  单篇炸了不能拖掉整批
+            return False
+
+    done = ok = 0
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        for hit in pool.map(_one, urls):
+            done += 1
+            ok += 1 if hit else 0
+            if log and (done % 50 == 0 or done == len(urls)):
+                log('  预热 %d/%d（成功 %d）' % (done, len(urls), ok))
+    return {'requested': len(urls), 'ok': ok}
+
+
 def _download_one_image(url: str, local_path: Path) -> bool:
     """取一张图。成功返回 True；失败**不抛**——一张图挂了不该影响这一篇的其它图。"""
     try:
@@ -846,6 +884,12 @@ def main():
     parser.add_argument('--no-ai', action='store_true', help='关闭摘要、分类和日报简报的 AI 调用')
     parser.add_argument('--no-fetch-cache', action='store_true',
                         help='忽略正文抓取缓存，强制重新抓取（默认命中缓存，用于续跑与重跑）')
+    parser.add_argument('--prefetch-bodies', nargs='?', type=int, const=PREFETCH_WORKERS, default=0,
+                        metavar='N',
+                        help='Phase 1 之前先**并发**把这一天的正文抓进缓存（N=并发数，默认 %d）——'
+                             'Phase 1 于是全部命中缓存、不再逐篇 sleep（450 篇约 75 分钟 → 秒级）。'
+                             '对上游的请求次数不变，只是压进更短的时间窗，所以默认关（见 prefetch_bodies）'
+                             % PREFETCH_WORKERS)
     parser.add_argument('--no-summary', action='store_true',
                         help='只要判断、不要生成：完全跳过 LLM 调用（摘要/标签/概念/简报），'
                              '主题与相关度仍由 Jev 判断；因此**不需要 DeepSeek key**')
@@ -1002,6 +1046,17 @@ def main():
 
     # Output folder already created above (with dedup state)
     print(f'输出目录: {out_dir}\n')
+
+    # ====== Phase 0: 并发预热正文缓存（可选，`--prefetch-bodies`）======
+    if args.prefetch_bodies and not args.no_fetch_cache:
+        print(f'=== Phase 0: 并发预热正文缓存（{args.prefetch_bodies} 并发）===\n')
+        prefetch = prefetch_bodies(articles, args.prefetch_bodies, log=print)
+        print(f'预热完成：{prefetch["ok"]}/{prefetch["requested"]} 篇进了缓存'
+              f'（没进的 Phase 1 会再试一次）\n')
+    elif args.prefetch_bodies:
+        # 说清楚为什么没做：`--no-fetch-cache` 让 Phase 1 绕过缓存，预热等于白抓一遍。
+        print('[WARN] 同时给了 --no-fetch-cache 与 --prefetch-bodies：'
+              '前者让 Phase 1 绕过缓存，预热没有意义，已跳过\n')
 
     # ====== Phase 1: Fetch all articles ======
     print(f'=== Phase 1: 抓取 {len(articles)} 篇文章 ===\n')

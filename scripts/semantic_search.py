@@ -344,6 +344,10 @@ def collect_articles(article_days=30):
                             break
                     # 有 `## 正文` 就用它（最精确的标记）；没有就按真实结构取正文，
                     # 不再退回到 YAML 头 —— 那正是"文章线只能靠标题排"的原因。
+                    # 索引这一路**只用日报 md 那份**（`## 正文` 标记优先，否则按真实结构提取）。
+                    # 2026-10-16 试过改成「与正文缓存取更长的那份」，实测**没有增益**（DECISIONS D-118）：
+                    # 100 条自造题里唯一中立的一组（标题）持平；两组碎片题各自跟着「题是从谁的文本里
+                    # 抠的」走，方向相反 —— 自造题裁判不了这件事。正文缓存留给 `--with-text`，索引不吃它。
                     body = ('\n'.join(lines[body_start:body_start + 50]) if body_start
                             else extract_article_body(content))
                     if title:
@@ -1037,6 +1041,39 @@ def _fetch_body(url):
 
 FULL_TEXT_LIMIT = 4000          # `--with-text` 默认给多少字（够一篇公众号全文）
 
+_FETCH_CACHE_DIR_NAME = ('.cache', 'fetch')
+
+
+def _fetch_cache_path(url):
+    return Path(OUTPUT_ROOT) / '.cache' / 'fetch' / (hashlib.md5(url.encode('utf-8')).hexdigest() + '.md')
+
+
+def best_article_body(content, limit=None, md_body=None):
+    """**展示路径**用：文章正文取**更长的那份** —— 日报 md，或它旁边那份正文缓存。
+
+    日报 md 里正文中位只有 259 汉字，而日报**自己抓到的**完整正文缓存里是 2,063 汉字 ——
+    内容早就抓回来了，只写进 md 一小段。`--with-text` 要给人看的那份，所以取全的。
+    ⚠️ **建索引不用这个函数**:实测吃完整正文对检索没有增益（DECISIONS D-118），
+    索引只吃 md 那份摘录（`collect_articles` 里 500 字）。
+    返回 `(body, url)`；url 从 frontmatter 取，取不到就是 None（那时只能用 md 那份）。
+    `md_body` 由调用方给时就用它（例如调用方已按自己的规则切出正文 —— 调用方的切法优先）。
+    """
+    body = (md_body if md_body is not None
+            else extract_article_body(content, limit or FULL_TEXT_LIMIT))
+    url = None
+    match = re.search(r'^url:\s*"?([^"\n]+)"?', content, re.M)
+    if match:
+        url = match.group(1).strip()
+        cached = _fetch_cache_path(url)
+        if cached.exists():
+            try:
+                full = cached.read_text(encoding='utf-8', errors='replace').strip()
+                if len(full) > len(body):
+                    body = full
+            except OSError:
+                pass                      # 读不了缓存就当没有，别让这一篇失败
+    return (body[:limit] if limit else body), url
+
 
 def load_record_text(item, limit=FULL_TEXT_LIMIT):
     """把命中的记录还原成本地那份**正文** —— 索引里存的只是"用来匹配的摘录"。
@@ -1062,22 +1099,7 @@ def load_record_text(item, limit=FULL_TEXT_LIMIT):
     except OSError:
         return None, str(path), None
 
-    url = None
-    match = re.search(r'^url:\s*"?([^"\n]+)"?', content, re.M)
-    if match:
-        url = match.group(1).strip()
-
-    body = extract_article_body(content, limit)
-    if url:
-        cached = Path(OUTPUT_ROOT) / '.cache' / 'fetch' / (
-            hashlib.md5(url.encode('utf-8')).hexdigest() + '.md')
-        if cached.exists():
-            try:
-                full = cached.read_text(encoding='utf-8', errors='replace').strip()
-                if len(full) > len(body):      # 缓存那份才是完整正文
-                    body = full[:limit]
-            except OSError:
-                pass
+    body, url = best_article_body(content, limit)
     return readable_body(body), str(path), url
 
 

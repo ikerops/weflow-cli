@@ -6212,12 +6212,14 @@ program
   .option('--source <name>', '仅处理指定公众号，可重复或用逗号分隔', (value, previous: string[] = []) => [...previous, value], [])
   .description('一键生成公众号日报（抓取 + AI 摘要 + HTML 阅读器 + 行动建议）')
   .option('-d, --date <YYYY-MM-DD>', '日期')
+  .option('--yesterday', '跑昨天（等价于 --date 昨天）。公众号发到 24:00 才停，所以当晚跑的那一天永远不全；"跑昨天"与时刻无关，计划任务用这个')
   .option('--api-key <key>', 'DeepSeek API key（或设环境变量 DEEPSEEK_API_KEY）')
   .option('--skip-classify', '跳过后处理')
   .option('--dry-run', '仅预览文章，不调用 AI 或写入日报')
   .option('--yes', '确认执行日报生成；JSON 模式需要此选项')
   .option('--no-ai', '关闭本次日报的所有 AI 处理')
   .option('--no-summary', '只判断不生成：不调 LLM 写摘要/标签/简报（主题与相关度仍由 Jev 判断），无需 DeepSeek key')
+  .option('--prefetch-bodies [n]', '抓取之前先并发把当天正文抓进缓存（n=并发数，默认 8）：抓取阶段于是全部命中缓存、不再逐篇 sleep 8-12 秒（450 篇约 75 分钟 → 秒级）。对上游的请求次数不变，只是压进更短的时间窗')
   .option('--json', '输出机器可读的最终结果；运行日志写入 stderr')
   .action(async (opts) => {
     const { spawn } = await import('child_process')
@@ -6228,7 +6230,16 @@ program
 
     const now = new Date()
     const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
-    const date = opts.date || localDate
+    const isoDate = (when: Date) => `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')}`
+    if (opts.date && opts.yesterday) {
+      const error = '--date 与 --yesterday 不能同时给（前者是明确的一天，后者是"昨天"）'
+      if (opts.json) console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', field: 'date', error }))
+      else console.log(chalk.red(error))
+      process.exit(1)
+    }
+    const date = opts.date || (opts.yesterday
+      ? isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))
+      : localDate)
     const apiKey = opts.apiKey || process.env.DEEPSEEK_API_KEY || ''
     const noAi = opts.ai === false || configService.get('dailyAiEnabled') === 'false'
     const dailyLog = (...values: any[]) => opts.json ? console.error(...values) : console.log(...values)
@@ -6254,6 +6265,14 @@ program
       if (opts.noSummary && !noAi) args.push('--no-summary')
       for (const source of opts.source || []) args.push('--source', source)
       if (opts.skipClassify) args.push('--skip-classify')
+      // 只在**给了**这个旗标时才解析数字：`--prefetch-bodies`（不带数字）是合法的，
+      // 而默认并发数只在 python 侧写一份（这里再写一份迟早漂移）。
+      if (opts.prefetchBodies !== undefined) {
+        args.push('--prefetch-bodies')
+        if (opts.prefetchBodies !== true) {
+          args.push(String(parseCliInteger(opts.prefetchBodies, 'prefetch-bodies', 1, 64, !!opts.json)))
+        }
+      }
 
       dailyLog(chalk.cyan(`\n📰 正在生成 ${targetDate} 公众号日报${noAi ? '（AI 已关闭）' : ''}...\n`))
       const child = spawn(getPythonCommand(), args, {
