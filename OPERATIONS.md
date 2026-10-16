@@ -919,13 +919,28 @@ weflow-cli daily --dry-run --json     # 看它读到多少篇、准备处理哪�
 读取没问题，缺的只是一个触发。交给计划任务：
 
 ```powershell
-$py = 'C:\Users\<你>\AppData\Local\Programs\Python\Python311\python.exe'
-$action  = New-ScheduledTaskAction -Execute $py `
-  -Argument '<仓库>\scripts\pipeline.py --yesterday --prefetch-bodies'
+$action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
+  -Argument '-NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\daily_task.ps1'
 $trigger = New-ScheduledTaskTrigger -Daily -At 08:20
 Register-ScheduledTask -TaskName 'WeFlow Daily' -Action $action -Trigger $trigger `
   -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew)
 ```
+
+动作只有一句"跑那个脚本"，具体的事在仓库里的 `scripts/daily_task.ps1`（纯 ASCII、路径全部相对自身）。
+它做三件事，每件都有理由：
+
+1. **跑昨天**：`pipeline.py --yesterday --prefetch-bodies`（见上面两条）。
+2. **把输出落盘**：`logs/daily-<日期>.log` 与 `daily-<日期>.err.log`（`logs/` 已 gitignore）。
+   输出丢掉的计划任务只会回答"失败了"，答不了"昨天为什么短"。
+3. **设 `PYTHONIOENCODING`/`PYTHONUTF8`**：这不是洁癖 —— 把 stdout 重定向到**文件**会改变 python 的
+   stdout 编码（不再是控制台、而是本地代码页）。标题里出现该代码页放不下的字符时，`print` 会在
+   **这一天已经写完之后**抛 `UnicodeEncodeError`，看着像失败而产物其实是好的。
+
+> 为什么不把 python 命令直接写进任务动作：① 实测 `Register-ScheduledTask` 对带嵌套引号的
+> `-Argument` 会报 `0x80004005`，而包一层脚本就不用跟引号搏斗；② 任务动作指向 CLI 那个 npm 包时，
+> 它一旦是构建产物，"改完代码没 build"就变成"任务跑的还是旧逻辑"。
+> 冒烟测试：`powershell -NoProfile -File <仓库>\scripts\daily_task.ps1 --help`（只打印帮助、零副作用，
+> 并且会写进当天那份日志 —— 证明链路是通的）。
 
 - 查看：`Get-ScheduledTask -TaskName 'WeFlow Daily'`
 - 手动跑一次：`Start-ScheduledTask -TaskName 'WeFlow Daily'`
