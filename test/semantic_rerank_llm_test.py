@@ -22,6 +22,8 @@ spec = importlib.util.spec_from_file_location('semantic_search', SCRIPTS / 'sema
 ss = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ss)
 
+import numpy as np  # noqa: E402
+
 
 class FakeResp:
     def __init__(self, content):
@@ -168,6 +170,45 @@ class DispatchTests(unittest.TestCase):
         out = ss.rerank_dispatch('q', items(), client=object())
         self.assertEqual(ss.RERANK_STATE['provider'], 'typesafe')
         self.assertEqual(out[0]['rerankScore'], 0.9)
+
+
+class PoolTests(unittest.TestCase):
+    """重排候选池：默认值 + 它有没有真的传进 search()。
+
+    池子是 2026-10-16 实测出来的最大杠杆（20 → 100 让 recall@10 从 0.82 到 0.95）——
+    所以"默认被谁改回去"这件事得有东西盯着；而"传了没生效"是同一类静默失效。
+    """
+
+    def test_default_pool_is_100(self):
+        self.assertEqual(ss.RERANK_CANDIDATES, 100,
+                         '默认池被改了？改之前先重跑评测台（recall_eval --rerank-pool 20/50/100/200）')
+
+    def test_search_forwards_pool_size(self):
+        root = Path(tempfile.mkdtemp(prefix='kb-pool-'))
+        saved = (ss.INDEX_DIR, ss.VECTORS_FILE, ss.META_FILE, ss.get_embeddings, ss.rerank_dispatch)
+        seen = {}
+        try:
+            ss.INDEX_DIR = root
+            ss.VECTORS_FILE = root / 'vectors.npy'
+            ss.META_FILE = root / 'meta.json'
+            meta = [{'id': 'd%d' % i, 'type': 'article', 'text': '正文%d' % i} for i in range(3)]
+            ss.META_FILE.write_text(json.dumps(meta, ensure_ascii=False), encoding='utf-8')
+            v = [0.0] * ss.EMBEDDING_DIM
+            v[0] = 1.0
+            np.save(ss.VECTORS_FILE, np.array([v, v, v], dtype=np.float32))
+            ss.get_embeddings = lambda texts, key, on_batch=None: [v]
+
+            def fake_dispatch(query, results, client=None, pool_size=None):
+                seen['pool'] = pool_size
+                return results
+
+            ss.rerank_dispatch = fake_dispatch
+            ss.search('q', 'key', top_k=2, line='all', rerank_pool=7)
+        finally:
+            (ss.INDEX_DIR, ss.VECTORS_FILE, ss.META_FILE, ss.get_embeddings,
+             ss.rerank_dispatch) = saved
+            shutil.rmtree(root, ignore_errors=True)
+        self.assertEqual(seen.get('pool'), 7, 'rerank_pool 没有传到重排（参数被吞了）')
 
 
 if __name__ == '__main__':

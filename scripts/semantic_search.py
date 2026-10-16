@@ -592,7 +592,14 @@ def keyword_search(query: str, top_k: int = 10, root=None, line: str = 'all'):
 
 # 送进重排的候选数。检索是粗筛（"语义相近"），重排是细判（"真的回答了问题吗"），
 # 所以池子要比 top_k 大，才有可换的空间。
-RERANK_CANDIDATES = 20
+# 送进重排的候选数。**2026-10-16 实测把默认从 20 提到 100**：同一批 40 题、只改池子
+# （POOL_CURVE = 20 / 50 / 100 / 200）：
+#     recall@10  0.82 / 0.88 / 0.95 / 0.95   hit@1  0.65 / 0.68 / 0.72 / 0.75
+#     MRR@10     0.72 / 0.75 / 0.80 / 0.82   nDCG@10 0.75 / 0.78 / 0.83 / 0.85
+# 最弱的"碎片/文章"那格 recall@10：0.70 → 0.80 → **1.00** → 1.00。到 100 就饱和，
+# 200 的增益是噪声级。代价是每次重排的提示从 ~2.5k tokens 涨到 ~20k（约 ¥0.01/次），
+# 所以池子做成可调（`--rerank-pool`），嫌贵就调小。
+RERANK_CANDIDATES = 100
 RERANK_EXCERPT_CHARS = 300
 
 
@@ -708,17 +715,17 @@ def llm_rerank(query, results, pool_size=RERANK_CANDIDATES, key=None, model=None
     return ranked + list(results[pool_size:])
 
 
-def rerank_dispatch(query, results, client=None):
+def rerank_dispatch(query, results, client=None, pool_size=RERANK_CANDIDATES):
     """先按原契约（Jev/Typesafe）重排，不可用或失败则退到已配置的对话模型。
 
     两个都失败时返回原序，并把 `RERANK_STATE` 留在"降级"上 —— 别让"没重排"看起来像"重排过了"。
     """
     RERANK_STATE.update(provider=None, degraded=False, error=None, scored=0)
     if client is not None:
-        out = rerank(query, results, client)
+        out = rerank(query, results, client, pool_size=pool_size)
         if not RERANK_STATE['degraded'] and RERANK_STATE['scored']:
             return out
-    return llm_rerank(query, results)
+    return llm_rerank(query, results, pool_size=pool_size)
 def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
     """用**一次**决策请求给检索结果重排。
 
@@ -924,7 +931,8 @@ def rrf_fuse(rank_lists, k=RRF_K):
     return sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
 
 def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = True,
-           line: str = 'all', hybrid: bool = True, from_source: str = None):
+           line: str = 'all', hybrid: bool = True, from_source: str = None,
+           rerank_pool: int = RERANK_CANDIDATES):
     """Semantic search with keyword fallback.
 
     `line` 在**取候选之前**就把不属于这条线的记录挡掉（把它们的相似度压成 -inf 再
@@ -976,7 +984,7 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                     similarities = np.where(in_scope, similarities, -np.inf)
                     in_scope_mask = in_scope
                 # 先取一个比重排池更大的候选集，重排才有可以换的空间。
-                pool_size = max(top_k, RERANK_CANDIDATES) if rerank_results else top_k
+                pool_size = max(top_k, rerank_pool) if rerank_results else top_k
                 if types is not None:
                     pool_size = min(pool_size, int(in_scope.sum()))
                 vec_order = [int(i) for i in np.argsort(similarities)[::-1][:RRF_POOL]]
@@ -994,7 +1002,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                     item = meta[idx]
                     results.append({**item, 'score': float(similarities[idx])})
                 if rerank_results:
-                    results = rerank_dispatch(query, results, create_client())
+                    results = rerank_dispatch(query, results, create_client(),
+                                              pool_size=rerank_pool)
                 return results[:top_k]
         except:
             pass
@@ -1004,7 +1013,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                              line=line)
     if rerank_results:
         # 关键词打分比余弦更粗，重排在这里的收益反而更大。
-        results = rerank_dispatch(query, results, create_client())
+                    results = rerank_dispatch(query, results, create_client(),
+                                              pool_size=rerank_pool)
     return results[:top_k]
 
 
@@ -1070,6 +1080,8 @@ def main():
     p.add_argument('--top-k', type=int, default=10)
     p.add_argument('--no-rerank', action='store_true',
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
+    p.add_argument('--rerank-pool', type=int, default=RERANK_CANDIDATES,
+                   help='重排看多少条候选（默认 %d；池子越大越准、越贵）' % RERANK_CANDIDATES)
     p.add_argument('--no-hybrid', action='store_true',
                    help='不融合本地 BM25 名次（默认融合：加门控后实测三个台子都只增不减）')
     p.add_argument('--from', dest='from_source',
@@ -1100,7 +1112,8 @@ def main():
             # （换个词 / 重建索引）是两回事。
             rows = search(query, api_key, top_k=args.top_k,
                           rerank_results=not args.no_rerank, line=args.line,
-                          hybrid=not args.no_hybrid, from_source=args.from_source)
+                          hybrid=not args.no_hybrid, from_source=args.from_source,
+                          rerank_pool=args.rerank_pool)
             counts = line_counts()
             result = {
                 'success': True,

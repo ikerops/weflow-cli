@@ -434,7 +434,7 @@ it immediately found a recall win: adding two gates to the keyword side of the f
 term vote, and only if their BM25 score is within 0.5x of the best; no rare term in the query means the keyword side
 abstains) took fragment recall@10 from 0.91 to **1.00** and hit@1 from 0.60 to **0.80**, moved title hit@1 from 0.83
 to 0.86, and left the hand-written-question battery unchanged - where the **ungated** version of the same fusion
-measured exactly like pure vectors on all three batteries. Fusion is on by default, and **rerank is live** since the same day (it falls back to the configured chat model, since the Jev contract is region-blocked here): on the same 40 questions hit@1 0.55 -> 0.65, recall@5 0.65 -> 0.80 and nDCG@10 0.63 -> 0.74, with one recorded regression (title recall@5 1.00 -> 0.90, one case) - see D-112; D-111 (which
+measured exactly like pure vectors on all three batteries. Fusion is on by default, and **rerank is live** since the same day (it falls back to the configured chat model, since the Jev contract is region-blocked here): on the same 40 questions hit@1 0.55 -> **0.75**, recall@5 0.65 -> **0.93**, recall@10 0.75 -> **0.95** and nDCG@10 0.63 -> **0.85**; the last step of that was the rerank **candidate pool**, raised from 20 to 100 by default after the pool curve 20/50/100/200 measured recall@10 0.82 -> 0.88 -> 0.95 -> 0.95 - which clears the published production thresholds (Recall@10 >= 0.90, MRR@10 >= 0.75) - see D-112 and D-113 (the latter also corrects a "regression" in D-112 that re-measured as noise); D-111 (which
 also corrects D-110's "harmful" conclusion: the fault was function words voting, not fusion).
 
 **One lever is measured dead, not merely unproven: filtering the index by `relevance`.** In this window every one of

@@ -112,6 +112,20 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   is the escape; and one regression is recorded rather than smoothed over - title/article recall@5 slipped 1.00 to
   0.90 (one case at n=10), whose fix (bigger candidate pool, or protecting the retrieval-side top hit) is not done.
 
+- **The rerank candidate pool is now 100 by default, because the pool was the biggest lever all along.** Rerank can
+  only reorder what retrieval hands it: with a pool of 20, a correct document ranked 21st by the hybrid ranking could
+  never appear. Measured on the same 40 questions with only the pool changed - 20 / 50 / 100 / 200 gives recall@10
+  **0.82 / 0.88 / 0.95 / 0.95**, MRR@10 0.72 / 0.75 / **0.80** / 0.82, nDCG@10 0.75 / 0.78 / **0.83** / 0.85, and in
+  the weakest cell (verbatim fragment on the article line) recall@10 0.70 / 0.80 / **1.00** / 1.00 - so 100 is the new
+  default and 200 buys nothing measurable. Against published production thresholds (Recall@10 >= 0.90, MRR >= 0.75)
+  this now clears both. The pool is adjustable per query (`--rerank-pool`, CLI and script; when the flag is absent
+  nothing is forwarded, so the default lives in exactly one place - the first version parsed the commander option
+  unconditionally and **made a missing flag a fatal invalid argument**), and the cost is stated plainly: the rerank
+  prompt grows from ~2.5k to ~20k tokens (~¥0.01 per search, a few seconds). Two corrections to the previous entry:
+  the title/article recall@5 "regression" was **noise** (rerank is not perfectly deterministic even at temperature 0,
+  and each cell holds 10 questions, so one case is 0.10) - it re-measures at 1.00; and per-cell numbers at n=10 must
+  not be used to judge a single change.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**

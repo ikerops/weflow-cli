@@ -47,7 +47,7 @@ function optName(flag: string): string {
   return bare.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())
 }
 
-const TO_SCRIPT = ['--top-k', '--line', '--no-rerank', '--no-hybrid', '--from']   // 走 argv 转给 python
+const TO_SCRIPT = ['--top-k', '--line', '--no-rerank', '--no-hybrid', '--from', '--rerank-pool']   // 走 argv 转给 python
 const LOCAL_ONLY = ['--api-key', '--dry-run', '--yes', '--json']  // 密钥走 env；其余本进程用
 
 test('search：声明了的旗标都得被分类、被读到、该转发的真的转发', () => {

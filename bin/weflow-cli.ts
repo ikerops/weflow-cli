@@ -5000,6 +5000,7 @@ program
     .option('--line <line>', 'wiki=文章线(默认) / chat=聊天记录 / all=两条都搜', 'wiki')
     .option('--no-rerank', '不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
     .option('--no-hybrid', '不融合本地 BM25 名次（默认融合；门控后实测只增不减）')
+    .option('--rerank-pool <n>', '重排看多少条候选（默认 100；越大越准也越贵）')
     .option('--from <account>', '只查这个公众号的文章（按文件名匹配，不走语义）')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--dry-run', '仅预览，不读取索引或调用向量服务')
@@ -5012,6 +5013,10 @@ program
     const pkgRoot = resolvePackageRoot()
       const script = join(pkgRoot, 'scripts', 'semantic_search.py')
       const topK = parseCliInteger(opts.topK, 'top-k', 1, 100, opts.json)
+      // 没传就**不转发**（默认值只在 Python 侧定义一处）：commander 对未提供的选项给 undefined，
+      // 直接 parseCliInteger 会被自己的校验判成非法参数 —— 实测就是这么红的。
+      const rerankPool = opts.rerankPool
+        ? parseCliInteger(opts.rerankPool, 'rerank-pool', 5, 500, opts.json) : null
       requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
       const preview = {
         success: true,
@@ -5021,6 +5026,7 @@ program
         line: opts.line,
         noRerank: opts.rerank === false,
         noHybrid: opts.hybrid === false,
+        rerankPool,
         from: opts.from || null,
         readsLocalIndex: true,
         mayUseCloudEmbedding: true,
@@ -5052,7 +5058,8 @@ program
       const args: string[] = [script, 'search', '--top-k', String(topK), '--line', opts.line,
         ...(opts.rerank === false ? ['--no-rerank'] : []),
         ...(opts.hybrid === false ? ['--no-hybrid'] : []),
-        ...(opts.from ? ['--from', opts.from] : [])]
+        ...(opts.from ? ['--from', opts.from] : []),
+        ...(rerankPool ? ['--rerank-pool', String(rerankPool)] : [])]
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {
           timeout: 60_000, maxBuffer: 10 * 1024 * 1024,
