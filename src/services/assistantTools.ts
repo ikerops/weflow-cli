@@ -922,7 +922,8 @@ export const TOOL_DEFS: ToolDef[] = [
         + '想不起原话、只记得大意时用它。'
         + '「上次说的那个部署方案是在哪聊的」用 search_chats；「和钱有关的讨论」这种同义改写用这条。'
         + '代价：查询词会发给阿里云百炼做嵌入、候选片段会发给判断模型重排（都是仓库既有的云端路径），'
-        + '需要先建过索引（weflow-cli search-index）。',
+        + '需要先建过索引（weflow-cli search-index）。'
+        + '用户要「正文 / 具体内容」时传 with_text: true（每条约 1500 字，比片段长得多）。',
       parameters: {
         type: 'object',
         properties: {
@@ -934,6 +935,11 @@ export const TOOL_DEFS: ToolDef[] = [
               + '问"我们聊过什么"「上次说的那个」这类一定要给 chat 或 all，否则会搜不到。',
           },
           top_k: { type: 'number', description: '要几条，默认 8，上限 20' },
+          with_text: {
+            type: 'boolean',
+            description: '用户**明确要正文/具体内容**时传 true：每条会带回本地正文'
+              + '（约 1500 字/条，比默认片段长得多，注意上下文占用）。默认 false 只给标题＋片段。',
+          },
           confirm: {
             type: 'boolean',
             description: '仅当用户**明确同意**这个工具会把内容发出去时才传 true。不传或传 false 时只返回预览（要发什么、发给谁），零出境。',
@@ -1948,11 +1954,15 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
         // 外部机器默认只给预览（`semantic_search.py` 没有 --dry-run，按入参说清）
         if (ctx.requiresConfirm && args.confirm !== true) {
           return confirmPreview(`会把查询词「${query.slice(0, 40)}」发给阿里云百炼做嵌入，`
-            + `再把前 ${topK} 条命中的本地片段（可能含聊天或文章原文）发给判断模型 Jev 重排。`)
+            + `再把前 ${topK} 条命中的本地片段（可能含聊天或文章原文）发给判断模型 Jev 重排。`
+            + (args.with_text === true
+              ? '你还要了正文：正文会一并进入模型上下文（每条约 1500 字）。' : ''))
         }
         // **查询词走环境变量、不进 argv**：仓库写进测试的隐私纪律（进程列表里看不到正文）
+        const withText = args.with_text === true
         const result = await runPythonJson<any>('semantic_search.py',
-          ['search', '--top-k', String(topK), '--line', line],
+          ['search', '--top-k', String(topK), '--line', line,
+            ...(withText ? ['--with-text', '1500'] : [])],
           { env: { WEFLOW_SEARCH_QUERY: query }, timeoutMs: 90_000 })
         if (!result.ok) return fail('语义检索失败（索引可能还没建：weflow-cli search-index）', result)
         if (result.data && typeof result.data.error === 'string') {
@@ -1971,14 +1981,23 @@ export async function executeTool(name: string, args: Record<string, any>, ctx: 
           return `(语义检索在${scope}里没有结果「${query}」${note ? '：' + note : ''}`
             + `${line === 'all' ? ')' : '；`line: \'all\'` 两条线一起搜)'}`
         }
-        return `语义检索「${query}」（范围：${scope}）前 ${rows.length} 条：` + String.fromCharCode(10) + rows.map((row: any) => {
+        const nl = String.fromCharCode(10)
+        const header = `语义检索「${query}」（范围：${scope}）前 ${rows.length} 条`
+          + (withText ? '，每条带正文' : '') + '：'
+        return header + nl + rows.map((row: any) => {
           const title = String(row.title || row.source || '(无标题)').slice(0, 40)
           const score = typeof row.score === 'number' ? `（${row.score.toFixed(2)}）` : ''
+          if (withText) {
+            // **正文路径**：脚本用 --with-text 取的是**本地那份正文**，不是用来匹配的摘录。
+            // 它同样要进模型上下文，所以照旧过遮罩；取不到正文就退回片段，别给空的。
+            const body = privacyGate.maskMessageBody(
+              String(row.fullText || row.text || '').replace(/\n{3,}/g, '\n\n').trim())
+            return `· ${title}${score}${body ? nl + body : ''}`
+          }
           const text = privacyGate.maskMessageBody(
             String(row.text || row.content || '').replace(/\s+/g, ' ').slice(0, 80))
-          const nl = String.fromCharCode(10)
           return `· ${title}${score}${text ? nl + '    ' + text : ''}`
-        }).join(String.fromCharCode(10))
+        }).join(nl)
       }
       case 'export_chat': {
         // **写操作**，边界写死：只往 output/exports/ 下**新建**目录（名字带时间戳），绝不覆盖；

@@ -713,6 +713,59 @@ test('search_semantic：严格模式下片段被遮罩', async () => {
   } finally { bridge.setScriptRunner(null) }
 })
 
+test('search_semantic：默认不带 --with-text（正文是"用户要了才给"）', async () => {
+  const calls = stubScript(semanticPayload([{ title: 't', score: 0.5, text: '片段' }]))
+  try {
+    await run('search_semantic', { query: 'x' })
+    assert.equal(calls[0].args.includes('--with-text'), false, '没人要正文时不该带上它')
+    await run('search_semantic', { query: 'x', with_text: false })
+    assert.equal(calls[1].args.includes('--with-text'), false, '显式 false 也不该带')
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_semantic：with_text:true 时转发 --with-text 1500，并把正文渲染出来', async () => {
+  // 夹具默认是严格遮罩（正文会被遮掉），这条测的是"正文有没有被带出来"，所以显式切到 balanced
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet(k))
+  const calls = stubScript(semanticPayload([
+    { title: '某篇论文', score: 0.91, text: '摘要片段', fullText: '## 导读\n卫星 AOD 反演是重要技术路径。\n研究结论：R² 达 0.87。' },
+  ]))
+  try {
+    const out = await run('search_semantic', { query: '遥感估算 PM2.5', with_text: true })
+    assert.ok(calls[0].args.includes('--with-text'), `该转发 --with-text：${calls[0].args.join(' ')}`)
+    assert.equal(calls[0].args[calls[0].args.indexOf('--with-text') + 1], '1500')
+    assert.match(out, /每条带正文/, '输出要写明这一趟带的是正文')
+    assert.match(out, /卫星 AOD 反演是重要技术路径/, '正文要在输出里')
+    assert.match(out, /R² 达 0\.87/)
+  } finally {
+    bridge.setScriptRunner(null)
+    ;(configService as any).get = realGet
+  }
+})
+
+test('search_semantic：with_text 下正文同样过遮罩（它也是进模型的东西）', async () => {
+  stubScript(semanticPayload([
+    { title: 't', score: 0.5, text: '片段', fullText: '第三方正文内容' },
+  ]))
+  try {
+    const out = await run('search_semantic', { query: 'x', with_text: true })
+    assert.doesNotMatch(out, /第三方正文内容/)
+  } finally { bridge.setScriptRunner(null) }
+})
+
+test('search_semantic：with_text 但脚本没给 fullText 时退回片段（不许给空的）', async () => {
+  const realGet = configService.get.bind(configService)
+  ;(configService as any).get = (k: string) => (k === 'assistantPrivacy' ? 'balanced' : realGet(k))
+  stubScript(semanticPayload([{ title: 't', score: 0.5, text: '只有片段' }]))
+  try {
+    const out = await run('search_semantic', { query: 'x', with_text: true })
+    assert.match(out, /只有片段/, '没有正文时至少给片段，不要留空')
+  } finally {
+    bridge.setScriptRunner(null)
+    ;(configService as any).get = realGet
+  }
+})
+
 test('search_semantic：没结果与失败是两句不同的话', async () => {
   stubScript(semanticPayload([], 'wiki', { note: '索引里一条文章线的记录都没有' }))
   try {

@@ -121,7 +121,7 @@ client-local config that is not in version control.
 | `wechat.search_knowledge` | Fuzzy-search concept pages in the knowledge base. Searches **one of the two lines by default** (the article one); pass `line: "chat"` or `"all"` for the conversation line. | Vault Wiki output |
 | `wechat.search_memory` | Search long-term assistant memory. | `~/.weflow-cli/assistant_memory.json` |
 | `wechat.search_chats` | Find which conversation discussed something (literal words). | Decrypted WeChat database, **words leave the machine - `confirm: true` required** |
-| `wechat.search_semantic` | Find chat messages by meaning, not literal words. Defaults to the article line; pass `line: "chat"` or `"all"`. | `dashscopeApiKey` config, network - **query and hits leave the machine, `confirm: true` required** |
+| `wechat.search_semantic` | Find chat messages by meaning, not literal words. Defaults to the article line; pass `line: "chat"` or `"all"`. Pass `with_text: true` when the **content** is wanted rather than titles: each hit then carries up to ~1500 characters of the local article body (from the daily markdown, or the shared fetch cache) instead of an 80-character snippet. | `dashscopeApiKey` config, network - **query and hits leave the machine, `confirm: true` required** |
 | `wechat.who_owes_reply` | Rank the conversations waiting on a reply. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
 | `wechat.draft_reply` | Draft candidate replies. | Decrypted WeChat database, **text leaves the machine - `confirm: true` required** |
 | `wechat.export_chat` | Export one conversation to HTML, txt, json or excel. | Decrypted WeChat database, **writes under `output/exports/`** |
