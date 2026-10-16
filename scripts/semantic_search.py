@@ -954,7 +954,7 @@ def dedup_results(results):
         out.append(entry)
     return out
 # 正文里按"行"删掉的公众号套话（只删整行，不动正文句子）
-_BOILERPLATE_LINE = re.compile(r'^\s*(在小说阅读器读本章|去阅读|在公众号小说中沉浸阅读|点击蓝字|关注我们|一键关注|设为星标|______+|-{3,})\s*$')
+_BOILERPLATE_LINE = re.compile(r'^\s*(在小说阅读器读本章|去阅读|在公众号小说中沉浸阅读|点击蓝字|关注我们|一键关注|设为星标|预览时标签不可点|阅读原文|微信扫一扫|关注该公众号|写留言|点个在看|点赞|在看|不喜欢|______+|-{3,})\s*$')
 
 
 def readable_body(text):
@@ -973,6 +973,27 @@ def readable_body(text):
             continue
         out.append(line)
     return '\n'.join(out)
+
+FULL_TEXT_MIN_CHARS = 300        # `--fetch-missing` 的判据：正文短于这个数就算"没抓到正文"
+
+
+def _fetch_body(url):
+    """按 url 取正文 —— **复用日报那套带缓存的抓取**（`biz_daily.fetch_article_cached`）。
+
+    不另写一份的理由与仓库里其它"同一份实现"一样：缓存格式、失败语义（只缓存成功）、
+    以及"入库前先看缓存"这件事必须只有一处。懒导入：不抓正文的路径不该被它拖着。
+    """
+    try:
+        from biz_daily import fetch_article_cached
+    except Exception as error:                      # noqa: BLE001
+        print('  [WARN] 抓正文不可用（%s），改用本地那份' % type(error).__name__, file=sys.stderr)
+        return None
+    try:
+        body, _cached = fetch_article_cached(url)
+    except Exception as error:                      # noqa: BLE001
+        print('  [WARN] 抓正文失败（%s）：%s' % (type(error).__name__, error), file=sys.stderr)
+        return None
+    return body
 
 FULL_TEXT_LIMIT = 4000          # `--with-text` 默认给多少字（够一篇公众号全文）
 
@@ -1020,23 +1041,38 @@ def load_record_text(item, limit=FULL_TEXT_LIMIT):
     return readable_body(body), str(path), url
 
 
-def attach_full_text(results, limit=FULL_TEXT_LIMIT):
-    """给每条结果挂上 `fullText` / `sourceFile` / `url`（读不到的挂 None，并数出来）。"""
+def attach_full_text(results, limit=FULL_TEXT_LIMIT, fetch_missing=0):
+    """给每条结果挂上 `fullText` / `sourceFile` / `url`（读不到的挂 None，并数出来）。
+
+    `fetch_missing>0` 时，**本地正文短于 `FULL_TEXT_MIN_CHARS` 的那些**会按 `url` 去抓（最多抓这么多条）：
+    抓得到的写回 `fullText` 并标 `fetchedFromUrl`，同一份缓存下次直接命中（不重复打扰上游）。
+    默认 0 = 不抓 —— 检索不该默认产生对上游的请求。返回 `(results, missing, fetched)`。
+    """
     missing = 0
+    fetched = 0
     for item in results:
         text, path, url = load_record_text(item, limit)
         if text is None:
             missing += 1
+        if fetch_missing and fetched < fetch_missing and url and len(text or '') < FULL_TEXT_MIN_CHARS:
+            body = _fetch_body(url)
+            if body and body.strip() and len(body) > len(text or ''):
+                text = readable_body(body)[:limit]
+                fetched += 1
+                item['fetchedFromUrl'] = True
         item['fullText'] = text
         if path:
             item['sourceFile'] = path.replace('\\', '/')
         if url:
             item['url'] = url
-    return results, missing
+    return results, missing, fetched
+
+
 def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = True,
            line: str = 'all', hybrid: bool = True, from_source: str = None,
            rerank_pool: int = RERANK_CANDIDATES,
-           dedup: bool = True, with_text: int = 0):
+           dedup: bool = True, with_text: int = 0,
+           fetch_missing: int = 0):
     """Semantic search with keyword fallback.
 
     `line` 在**取候选之前**就把不属于这条线的记录挡掉（把它们的相似度压成 -inf 再
@@ -1111,7 +1147,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                 if dedup:
                     results = dedup_results(results)
                 if with_text:
-                    results, _missing = attach_full_text(results, with_text)
+                    results, _missing, _fetched = attach_full_text(results, with_text,
+                                                                  fetch_missing=fetch_missing)
                 return results[:top_k]
         except:
             pass
@@ -1126,7 +1163,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
     if dedup:
         results = dedup_results(results)
     if with_text:
-        results, _missing = attach_full_text(results, with_text)
+        results, _missing, _fetched = attach_full_text(results, with_text,
+                                                      fetch_missing=fetch_missing)
     return results[:top_k]
 
 
@@ -1192,6 +1230,9 @@ def main():
     p.add_argument('--top-k', type=int, default=10)
     p.add_argument('--no-rerank', action='store_true',
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
+    p.add_argument('--fetch-missing', nargs='?', type=int, const=3, default=0,
+                   metavar='N',
+                   help='正文短于 300 字的那些按 url 抓一次（最多 N 条，默认 3）；复用日报的缓存')
     p.add_argument('--with-text', nargs='?', type=int, const=FULL_TEXT_LIMIT,
                    default=0, metavar='N',
                    help='给每条命中挂上本地正文字段 fullText/sourceFile/url（默认不给；'
@@ -1233,7 +1274,8 @@ def main():
                           hybrid=not args.no_hybrid, from_source=args.from_source,
                           rerank_pool=args.rerank_pool,
                           dedup=not args.no_dedup,
-                          with_text=args.with_text)
+                          with_text=args.with_text,
+                          fetch_missing=args.fetch_missing)
             counts = line_counts()
             result = {
                 'success': True,
@@ -1244,6 +1286,7 @@ def main():
                 'from': args.from_source,
                 'dedup': not args.no_dedup,
                 'withText': args.with_text,
+                'fetchMissing': args.fetch_missing,
                 'results': rows,
                 'indexCounts': counts,
             }

@@ -1406,6 +1406,29 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-116: `--fetch-missing` 按 url 补正文，复用日报的缓存与判据
+
+**Status:** Active（2026-10-16 实测：`XGBoost-SHAP 陕西 PM2.5` 的第一条 201 字 → **965 字**）
+
+**Decision.** `--with-text` 之外再加 `--fetch-missing [N]`（默认关，`const=3` = 不写字数时最多抓 3 条）：
+**本地正文短于 300 字、且有 `url`** 的那些，按 url 抓一次；抓到的写回 `fullText` 并标 `fetchedFromUrl`。
+抓取**复用日报那套** `biz_daily.fetch_article_cached`（同一份缓存 `output/.cache/fetch/<md5(url)>.md`、
+只缓存成功、"先看缓存再上网"），不另写一份。抓失败就保留本地那份，并把条数报出来。
+
+**Reason: 薄的正文不该逼用户自己放弃，但也不该默认去打扰上游。** 实测那条的日报 md 只有 201 字
+（好文回顾类文章 md 本身就短），抓回来是完整摘要与结论（2013—2022 年陕西 PM2.5 年均浓度从 56.02 µg/m³ 降下来、
+主控因子按高程/相对湿度/温度/人口密度排序）。三条边界是**故意的**：
+- **默认关**：检索不该默认产生对上游的请求（`docs/NEXT_ACTIONS.md` 点过名的规矩）；
+- **有上限**：一次最多抓 3 条，避免"一次检索打十个请求"。与日报的 8–12 秒批量节流不同 ——
+  那是几百篇的礼貌，这是几条的按需，**这个差异是刻意的**，不是漏了节流；
+- **只抓薄的**：本地已经 3,020 字的那条在这趟里没被碰（实测验过）。
+
+**Consequences.**
+- 同一份缓存被日报/回填/检索共用：检索抓过的，日报重跑时直接命中；反过来也一样。
+- 与日报一样，抓来的正文只有"当时那一版"——源站改稿不会反映到缓存里（要新就删那条缓存重抓）。
+- 顺手把"预览时标签不可点/微信扫一扫/关注该公众号"这类尾巴补进了整行套话清单：抓回来的那篇结尾挂着它们。
+  清单只删**整行**，不动正文句子。
+
 ## D-115: `search --with-text` 返回**正文**，而不是"用来匹配的那段摘录"
 
 **Status:** Active（2026-10-16 用户指出：只返回标题/分数/摘录"没什么具体意思"，要具体到某篇的内容）

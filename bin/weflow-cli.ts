@@ -5003,6 +5003,7 @@ program
     .option('--rerank-pool <n>', '重排看多少条候选（默认 100；越大越准也越贵）')
     .option('--no-dedup', '不折叠同文本的多号转载（默认折叠，结果里带 duplicateCount）')
     .option('--with-text [n]', '给每条命中挂上本地正文（fullText / sourceFile / url）；n 为每条最多多少字')
+    .option('--fetch-missing [n]', '正文太薄时按 url 抓一次（最多 n 条，默认 3；复用日报缓存）')
     .option('--from <account>', '只查这个公众号的文章（按文件名匹配，不走语义）')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--dry-run', '仅预览，不读取索引或调用向量服务')
@@ -5031,6 +5032,7 @@ program
         rerankPool,
         noDedup: opts.dedup === false,
         withText: opts.withText || null,
+        fetchMissing: opts.fetchMissing || null,
         from: opts.from || null,
         readsLocalIndex: true,
         mayUseCloudEmbedding: true,
@@ -5065,7 +5067,9 @@ program
         ...(opts.from ? ['--from', opts.from] : []),
         ...(rerankPool ? ['--rerank-pool', String(rerankPool)] : []),
         ...(opts.dedup === false ? ['--no-dedup'] : []),
-        ...(opts.withText ? ['--with-text', opts.withText === true ? '4000' : String(opts.withText)] : [])]
+        ...(opts.withText ? ['--with-text', opts.withText === true ? '4000' : String(opts.withText)] : []),
+        ...(opts.fetchMissing ? ['--fetch-missing',
+          opts.fetchMissing === true ? '3' : String(opts.fetchMissing)] : [])]
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {
           timeout: 60_000, maxBuffer: 10 * 1024 * 1024,

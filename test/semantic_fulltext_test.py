@@ -100,7 +100,8 @@ class FullTextTests(unittest.TestCase):
 
     def test_attach_counts_what_it_could_not_read(self):
         results = [{**self.item}, {'id': 'article:2020-01-01/新闻/不存在.md', 'type': 'article'}]
-        out, missing = ss.attach_full_text(results)
+        out, missing, fetched = ss.attach_full_text(results)
+        self.assertEqual(fetched, 0, '没开 --fetch-missing 时不该有任何抓取')
         self.assertEqual(missing, 1)
         self.assertIn('平流-扩散方程', out[0]['fullText'])
         self.assertIsNone(out[1]['fullText'])
@@ -115,6 +116,74 @@ class FullTextTests(unittest.TestCase):
         self.assertEqual(text, '我直接把那个pdf导出成图的')
         self.assertIsNone(path)
         self.assertIsNone(url)
+
+
+class FetchMissingTests(unittest.TestCase):
+    """`--fetch-missing`：本地正文太薄时按 url 抓一次（复用日报的缓存），**默认关**、有上限。"""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix='kb-fetch-'))
+        self._saved = (ss.OUTPUT_ROOT, ss._fetch_body)
+        ss.OUTPUT_ROOT = str(self.root)
+        # 一份"很薄的日报 md"（正文只有几十字）
+        self.rel = '2026-10-13/学术/某号-好文回顾.md'
+        p = self.root / 'biz-daily' / self.rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('---\ntitle: "好文回顾"\nurl: "%s"\n---\n\n# 好文回顾\n\n摘要很短，但也够六个字了。\n' % URL,
+                     encoding='utf-8')
+        self.item = {'id': 'article:' + self.rel.replace('/', '\\'), 'type': 'article',
+                     'title': '好文回顾', 'text': '好文回顾\n摘要很短，但也够六个字了。'}
+        self.calls = []
+
+    def tearDown(self):
+        (ss.OUTPUT_ROOT, ss._fetch_body) = self._saved
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def fetch(self, body):
+        def _f(url):
+            self.calls.append(url)
+            return body
+        return _f
+
+    def test_off_by_default_no_request(self):
+        ss._fetch_body = self.fetch('抓来的完整正文' * 60)
+        out, _m, fetched = ss.attach_full_text([{**self.item}])
+        self.assertEqual(self.calls, [], '默认不许对上游发请求')
+        self.assertEqual(fetched, 0)
+        self.assertNotIn('fetchedFromUrl', out[0])
+
+    def test_fetches_only_short_bodies(self):
+        ss._fetch_body = self.fetch('抓来的完整正文' * 60)
+        long_item = dict(self.item, id='article:2026-10-02/新闻/长文.md')
+        p = self.root / 'biz-daily' / '2026-10-02' / '新闻' / '长文.md'
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('---\nurl: "%s"\n---\n\n# 长文\n\n%s\n' % (URL, '本来就很长的正文。' * 60),
+                     encoding='utf-8')
+        out, _m, fetched = ss.attach_full_text([long_item, {**self.item}], fetch_missing=3)
+        self.assertEqual(len(self.calls), 1, '只有薄的那条该被抓')
+        self.assertEqual(fetched, 1)
+        self.assertTrue(out[1].get('fetchedFromUrl'))
+        self.assertNotIn('fetchedFromUrl', out[0])
+
+    def test_respects_the_cap(self):
+        ss._fetch_body = self.fetch('抓来的完整正文' * 60)
+        items = []
+        for n in range(5):
+            rel = '2026-10-1%d/学术/薄%d.md' % (n, n)
+            f = self.root / 'biz-daily' / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text('---\nurl: "%s"\n---\n\n# 薄\n\n短。\n' % URL, encoding='utf-8')
+            items.append({'id': 'article:' + rel.replace('/', '\\'), 'type': 'article', 'text': '正文很短，先记一笔。'})
+        _out, _m, fetched = ss.attach_full_text(items, fetch_missing=2)
+        self.assertEqual(len(self.calls), 2, '上限就是上限')
+        self.assertEqual(fetched, 2)
+
+    def test_failure_keeps_the_local_text(self):
+        ss._fetch_body = self.fetch(None)
+        out, _m, fetched = ss.attach_full_text([{**self.item}], fetch_missing=3)
+        self.assertEqual(fetched, 0)
+        self.assertFalse(out[0].get('fetchedFromUrl'))
+        self.assertIn('够六个字', out[0]['fullText'], '抓不到就保留本地那份，别清空')
 
 
 if __name__ == '__main__':

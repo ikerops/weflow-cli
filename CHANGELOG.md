@@ -152,6 +152,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   AOD feature importance 40.63%); before image syntax was stripped it was 3,860 characters, ~2,100 of which was one
   line of `![](https://mmbiz.qpic.cn/…)`.
 
+- **`--fetch-missing` fills in a thin body by fetching the article, through the daily pipeline's own cache.**
+  Some daily markdown files are stubs (a "好文回顾" record held 201 characters), and `--with-text` could only hand
+  back that stub. With this flag, any record whose local body is under 300 characters **and** that carries a `url`
+  is fetched once; the result replaces `fullText`, is marked `fetchedFromUrl`, and is written to the **same** cache
+  the daily and backfill use (`output/.cache/fetch/<md5(url)>.md`, success-only, cache-before-network), so whichever
+  path fetches it, the other gets it free next time. It is off by default (a search should not generate upstream
+  requests on its own), capped (3 records unless a number is given), and only touches thin bodies - measured on one
+  query, a 201-character stub became 965 characters of abstract and findings while a 3,020-character neighbour was
+  left alone. Failures keep the local text and are reported rather than blanking the field. It deliberately does
+  **not** sleep between fetches the way the daily's batch path sleeps 8-12 seconds: that is politeness for hundreds
+  of articles, this is three on demand. Same caveat as the daily: the cache is the version fetched at that time, so a
+  revised source article will not be reflected.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**
