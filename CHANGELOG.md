@@ -19,6 +19,8 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+## 1.12.0
+
 - **One word per question, across every artifact that describes exported media.** The auxiliary `*_media.json`
   called a document entry `exported` when it meant "the local copy was **found**", while `manifest.json` used
   `exported` for "it is **in the assets directory**" - two different questions wearing one word, and a copy
