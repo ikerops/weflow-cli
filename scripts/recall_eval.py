@@ -135,6 +135,7 @@ def main():
     ap.add_argument('--dedup', action='store_true', help='排名前把同文本记录合并')
     ap.add_argument('--rerank', action='store_true',
                     help='调真正的重排（先试 Jev 契约，再退到已配置的对话模型）')
+    ap.add_argument('--mmr', action='store_true', help='排名后做 MMR 去冗余（λ=0.7）')
     ap.add_argument('--rerank-pool', type=int, default=ss.RERANK_CANDIDATES,
                     help='重排看多少条候选（默认 %d）' % ss.RERANK_CANDIDATES)
     ap.add_argument('--json', action='store_true')
@@ -178,6 +179,10 @@ def main():
             ranked = ss.rerank_dispatch(c['query'], pool, ss.create_client(),
                                          pool_size=args.rerank_pool)
             order = [it['_idx'] for it in ranked] + list(order[args.rerank_pool:])
+        if args.mmr:
+            pool2 = [{**meta[i], '_row': i, 'rerankScore': r.get('rerankScore')}
+                     for i, r in zip(order[:args.rerank_pool], ranked)]
+            order = [it['_row'] for it in ss.mmr_select(pool2, vectors, args.top_k)]
         if args.dedup:
             seen, keep = set(), []
             for i in order:
@@ -188,7 +193,17 @@ def main():
                 keep.append(i)
             order = keep
         rank = rank_of(order, c['group'])
-        rows.append({**c, 'group': None, 'rank': rank, 'metrics': metrics(rank, args.top_k)})
+        # 多样性：最终 top-k 里两两余弦的均值 —— 越低说明结果越不重复。
+        # 加它是因为 MMR 这类去冗余与「单答案召回」是相冲的，只看召回会误判。
+        top = [i for i in order[:args.top_k] if i < len(texts)]
+        div = None
+        if len(top) >= 2:
+            mat = np.asarray(vectors[top], dtype=np.float32)
+            sims = mat @ mat.T
+            n = len(top)
+            div = float((sims.sum() - np.trace(sims)) / (n * (n - 1)))
+        rows.append({**c, 'group': None, 'rank': rank, 'div': div,
+                     'metrics': metrics(rank, args.top_k)})
 
     def agg(sel):
         covered = [r for r in sel if r['rank'] is not None or (r.get('covered') is not False)]
@@ -198,10 +213,12 @@ def main():
         for k in ('hit@1', 'recall@1', 'recall@5', 'recall@10', 'mrr@10', 'ndcg@10'):
             out[k] = (sum(r['metrics'][k] for r in covered) / len(covered)) if covered else 0.0
         out['n_recalled'] = len(scored)
+        divs = [r['div'] for r in sel if r.get('div') is not None]
+        out['pairwiseDiversity'] = (sum(divs) / len(divs)) if divs else None
         return out
 
     report = {'config': {'records': args.records, 'seed': args.seed, 'dedup': args.dedup,
-                         'rerank': args.rerank, 'rerankPool': args.rerank_pool, 'rerankState': dict(ss.RERANK_STATE),
+                         'rerank': args.rerank, 'rerankPool': args.rerank_pool, 'mmr': args.mmr, 'rerankState': dict(ss.RERANK_STATE),
                          'topK': args.top_k, 'indexCounts': ss.line_counts()},
               'overall': agg(rows), 'byGroup': {}, 'cases': [
                   {'form': r['form'], 'line': r['line'], 'query': r['query'], 'rank': r['rank']}
@@ -217,10 +234,13 @@ def main():
         return
     print('题数 %d（覆盖缺口 %d）  dedup=%s' % (report['overall']['n'],
                                           report['overall']['n_coverage_gap'], args.dedup))
-    print('%-16s %6s %8s %8s %8s %8s %8s' % ('组', 'n', 'hit@1', 'recall@5', 'recall@10', 'mrr@10', 'ndcg@10'))
+    print('%-16s %6s %8s %8s %8s %8s %8s %9s'
+          % ('组', 'n', 'hit@1', 'recall@5', 'recall@10', 'mrr@10', 'ndcg@10', '多样性'))
     for name, m in [('overall', report['overall'])] + list(report['byGroup'].items()):
-        print('%-16s %6d %8.2f %8.2f %8.2f %8.2f %8.2f'
-              % (name, m['n'], m['hit@1'], m['recall@5'], m['recall@10'], m['mrr@10'], m['ndcg@10']))
+        div = m.get('pairwiseDiversity')
+        print('%-16s %6d %8.2f %8.2f %8.2f %8.2f %8.2f %9s'
+              % (name, m['n'], m['hit@1'], m['recall@5'], m['recall@10'], m['mrr@10'],
+                 m['ndcg@10'], ('%.3f' % div) if div is not None else '-'))
 
 
 if __name__ == '__main__':

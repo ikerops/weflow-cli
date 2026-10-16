@@ -930,6 +930,46 @@ def rrf_fuse(rank_lists, k=RRF_K):
             score[idx] = score.get(idx, 0.0) + 1.0 / (k + rank + 1)
     return sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
 
+MMR_LAMBDA = 0.7                 # 照 WeKnora 的取值：相关性为主、多样性为辅
+
+
+def mmr_select(items, vectors, k, lam=MMR_LAMBDA):
+    """在**已经排好序**的候选里挑 k 条：又相关、又彼此不像（Maximal Marginal Relevance）。
+
+    为什么要有它：这条语料里"同领域邻居"很多（实测 top-5 常有三四条在讲同一件事），它们吃掉名额
+    却不增加信息。MMR 给每条的边际价值 = λ×相关性 − (1−λ)×与**已选条目**的最大相似度，逐条贪心挑。
+
+    相关性取重排分（0-100 归一化到 0-1），没有重排分就退回余弦；相似度用向量点积（存的就是归一化的）。
+    条目必须带 `_row`（在 meta/向量里的行号）—— `search()` 在重排前挂上、返回前摘掉。
+    与"同文本折叠"（`dedup_results`）不是一回事：那个折叠一模一样的内容，这个压的是**近似**的内容。
+    """
+    np = require_numpy()
+    if k <= 0 or not items:
+        return items
+    rows, rel = [], []
+    for item in items:
+        row = item.get('_row')
+        if row is None:
+            return items                      # 拿不到行号就不动它，别猜
+        rows.append(int(row))
+        score = item.get('rerankScore')
+        rel.append((float(score) / 100.0) if isinstance(score, (int, float)) else
+                   float(item.get('score') or 0.0))
+    matrix = np.asarray(vectors[rows], dtype=np.float32)
+    rel = np.asarray(rel, dtype=np.float32)
+
+    chosen, remaining = [], list(range(len(items)))
+    max_sim = np.zeros(len(items), dtype=np.float32)
+    while remaining and len(chosen) < k:
+        gain = lam * rel[remaining] - (1 - lam) * max_sim[remaining]
+        best = remaining[int(np.argmax(gain))]
+        chosen.append(best)
+        remaining.remove(best)
+        sims = matrix @ matrix[best]
+        max_sim = np.maximum(max_sim, sims)
+    rest = [i for i in range(len(items)) if i not in set(chosen)]
+    return [items[i] for i in chosen + rest]
+
 def dedup_results(results):
     """同一段文本只留排名最高的那条，被折叠的账号数记在 `duplicateCount` 里。
 
@@ -1072,7 +1112,7 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
            line: str = 'all', hybrid: bool = True, from_source: str = None,
            rerank_pool: int = RERANK_CANDIDATES,
            dedup: bool = True, with_text: int = 0,
-           fetch_missing: int = 0):
+           fetch_missing: int = 0, mmr: bool = False):
     """Semantic search with keyword fallback.
 
     `line` 在**取候选之前**就把不属于这条线的记录挡掉（把它们的相似度压成 -inf 再
@@ -1140,7 +1180,7 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                 results = []
                 for idx in top_indices:
                     item = meta[idx]
-                    results.append({**item, 'score': float(similarities[idx])})
+                    results.append({**item, '_row': int(idx), 'score': float(similarities[idx])})
                 if rerank_results:
                     results = rerank_dispatch(query, results, create_client(),
                                               pool_size=rerank_pool)
@@ -1149,6 +1189,10 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                 if with_text:
                     results, _missing, _fetched = attach_full_text(results, with_text,
                                                                   fetch_missing=fetch_missing)
+                if mmr:
+                    results = mmr_select(results, vectors, top_k)
+                for _item in results:                 # `_row` 只是内部用的，别漏进输出
+                    _item.pop('_row', None)
                 return results[:top_k]
         except:
             pass
@@ -1165,6 +1209,10 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
     if with_text:
         results, _missing, _fetched = attach_full_text(results, with_text,
                                                       fetch_missing=fetch_missing)
+    if mmr:
+        results = mmr_select(results, vectors, top_k)
+    for _item in results:                 # `_row` 只是内部用的，别漏进输出
+        _item.pop('_row', None)
     return results[:top_k]
 
 
@@ -1230,6 +1278,8 @@ def main():
     p.add_argument('--top-k', type=int, default=10)
     p.add_argument('--no-rerank', action='store_true',
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
+    p.add_argument('--mmr', action='store_true',
+                   help='对最终结果做 MMR 去冗余（λ=0.7）：压掉近似的同领域邻居，可能牺牲单点召回')
     p.add_argument('--fetch-missing', nargs='?', type=int, const=3, default=0,
                    metavar='N',
                    help='正文短于 300 字的那些按 url 抓一次（最多 N 条，默认 3）；复用日报的缓存')
@@ -1275,7 +1325,8 @@ def main():
                           rerank_pool=args.rerank_pool,
                           dedup=not args.no_dedup,
                           with_text=args.with_text,
-                          fetch_missing=args.fetch_missing)
+                          fetch_missing=args.fetch_missing,
+                          mmr=args.mmr)
             counts = line_counts()
             result = {
                 'success': True,
@@ -1287,6 +1338,7 @@ def main():
                 'dedup': not args.no_dedup,
                 'withText': args.with_text,
                 'fetchMissing': args.fetch_missing,
+                'mmr': args.mmr,
                 'results': rows,
                 'indexCounts': counts,
             }

@@ -165,6 +165,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   of articles, this is three on demand. Same caveat as the daily: the cache is the version fetched at that time, so a
   revised source article will not be reflected.
 
+- **MMR redundancy removal was built, measured, and left off by default - it removes useful material here.** The
+  new `search --mmr` flag re-orders the final results with Maximal Marginal Relevance (lambda 0.7, the value WeKnora
+  uses) and the evaluation harness grew a **diversity metric** (mean pairwise cosine inside the returned top-k). It
+  does what it says on the ranking side: diversity goes from 0.627 to 0.559 with recall@10 unchanged at 0.95. But
+  judged precision (same criterion and judge as the precision baseline: 10 questions, top-5 each) **drops** - strict
+  relevant 40% -> 30%, loose 68% -> 64% - and recall@5 slips 0.93 -> 0.90. The reason is worth keeping: in this
+  corpus the "duplicates" are mostly **several accounts carrying the same story**, i.e. multi-source confirmation
+  rather than noise, so pushing redundancy down starts deleting the very items that answer the question. The cheap
+  half of that problem is already handled by default same-text collapsing (D-114), which costs nothing and loses no
+  information. Tuning lambda is not the fix (larger just degenerates to plain relevance, smaller deletes more): the
+  direction is wrong, not the weight.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**
