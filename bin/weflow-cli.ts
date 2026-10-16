@@ -5001,6 +5001,7 @@ program
     .option('--no-rerank', '不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
     .option('--no-hybrid', '不融合本地 BM25 名次（默认融合；门控后实测只增不减）')
     .option('--rerank-pool <n>', '重排看多少条候选（默认 100；越大越准也越贵）')
+    .option('--no-dedup', '不折叠同文本的多号转载（默认折叠，结果里带 duplicateCount）')
     .option('--from <account>', '只查这个公众号的文章（按文件名匹配，不走语义）')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--dry-run', '仅预览，不读取索引或调用向量服务')
@@ -5027,6 +5028,7 @@ program
         noRerank: opts.rerank === false,
         noHybrid: opts.hybrid === false,
         rerankPool,
+        noDedup: opts.dedup === false,
         from: opts.from || null,
         readsLocalIndex: true,
         mayUseCloudEmbedding: true,
@@ -5059,7 +5061,8 @@ program
         ...(opts.rerank === false ? ['--no-rerank'] : []),
         ...(opts.hybrid === false ? ['--no-hybrid'] : []),
         ...(opts.from ? ['--from', opts.from] : []),
-        ...(rerankPool ? ['--rerank-pool', String(rerankPool)] : [])]
+        ...(rerankPool ? ['--rerank-pool', String(rerankPool)] : []),
+        ...(opts.dedup === false ? ['--no-dedup'] : [])]
       try {
         const { stdout } = await execFileAsync(getPythonCommand(), args, {
           timeout: 60_000, maxBuffer: 10 * 1024 * 1024,

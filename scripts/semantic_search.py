@@ -930,9 +930,33 @@ def rrf_fuse(rank_lists, k=RRF_K):
             score[idx] = score.get(idx, 0.0) + 1.0 / (k + rank + 1)
     return sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
 
+def dedup_results(results):
+    """同一段文本只留排名最高的那条，被折叠的账号数记在 `duplicateCount` 里。
+
+    为什么在**取出结果时**做：多号转载是这语料的常态（实测 2026-10-16：20 条问句的 top-5 里 7% 是重复文本，
+    6/20 条问句的 top-5 出现过重复），重复占的是名额而不是信息。不做成"建索引时去重"是因为那会破坏
+    `--from <公众号>` 这类按号查（被折叠的账号仍在 id 里）；所以留着索引，折叠留给展示。
+    `duplicateCount` 让用户知道"同一篇被几个号发过"，而不是以为丢了什么。
+    """
+    seen, out = {}, []
+    for item in results:
+        text = item.get('text') or ''
+        if not text:            # 没有正文的记录各算各的：空串之间不是"同一段"
+            out.append({**item, 'duplicateCount': 1})
+            continue
+        h = hash(text)
+        if h in seen:
+            seen[h]['duplicateCount'] = seen[h].get('duplicateCount', 1) + 1
+            continue
+        entry = dict(item)
+        entry['duplicateCount'] = 1
+        seen[h] = entry
+        out.append(entry)
+    return out
 def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = True,
            line: str = 'all', hybrid: bool = True, from_source: str = None,
-           rerank_pool: int = RERANK_CANDIDATES):
+           rerank_pool: int = RERANK_CANDIDATES,
+           dedup: bool = True):
     """Semantic search with keyword fallback.
 
     `line` 在**取候选之前**就把不属于这条线的记录挡掉（把它们的相似度压成 -inf 再
@@ -1004,6 +1028,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                 if rerank_results:
                     results = rerank_dispatch(query, results, create_client(),
                                               pool_size=rerank_pool)
+                if dedup:
+                    results = dedup_results(results)
                 return results[:top_k]
         except:
             pass
@@ -1015,6 +1041,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
         # 关键词打分比余弦更粗，重排在这里的收益反而更大。
                     results = rerank_dispatch(query, results, create_client(),
                                               pool_size=rerank_pool)
+    if dedup:
+        results = dedup_results(results)
     return results[:top_k]
 
 
@@ -1080,6 +1108,8 @@ def main():
     p.add_argument('--top-k', type=int, default=10)
     p.add_argument('--no-rerank', action='store_true',
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
+    p.add_argument('--no-dedup', action='store_true',
+                   help='不折叠同文本的多号转载（默认折叠，并在结果里给 duplicateCount）')
     p.add_argument('--rerank-pool', type=int, default=RERANK_CANDIDATES,
                    help='重排看多少条候选（默认 %d；池子越大越准、越贵）' % RERANK_CANDIDATES)
     p.add_argument('--no-hybrid', action='store_true',
@@ -1113,7 +1143,8 @@ def main():
             rows = search(query, api_key, top_k=args.top_k,
                           rerank_results=not args.no_rerank, line=args.line,
                           hybrid=not args.no_hybrid, from_source=args.from_source,
-                          rerank_pool=args.rerank_pool)
+                          rerank_pool=args.rerank_pool,
+                          dedup=not args.no_dedup)
             counts = line_counts()
             result = {
                 'success': True,
@@ -1122,6 +1153,7 @@ def main():
                 'hybrid': not args.no_hybrid,
                 'rerank': dict(RERANK_STATE),
                 'from': args.from_source,
+                'dedup': not args.no_dedup,
                 'results': rows,
                 'indexCounts': counts,
             }

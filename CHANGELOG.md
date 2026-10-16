@@ -126,6 +126,17 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   and each cell holds 10 questions, so one case is 0.10) - it re-measures at 1.00; and per-cell numbers at n=10 must
   not be used to judge a single change.
 
+- **Results are collapsed by identical text now, because multi-account reposts were eating slots.** Measured on the
+  current defaults (rerank with a pool of 100): **7%** of 100 top-5 slots held a duplicate of another item in the same
+  result list, and **6 of 20** questions showed one - e.g. the 环境监测新规 query had a five-department notice carried
+  by three accounts plus a meeting report carried by three more, so four slots went to two pieces of content. The
+  first (best-ranked) copy is kept and the others are counted into a new `duplicateCount` field, so the fact that
+  several accounts carried it stays visible instead of silently shrinking the list; `--no-dedup` returns the raw
+  list. This deliberately happens at presentation time and **not at index time**: the index keeps every copy because
+  `--from <account>` resolves an account through the record's `id`, and dropping copies there would make per-account
+  lookups lose records. It changes no recall metric (the ground truth is content) - only how much distinct material
+  one result list actually carries.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**
