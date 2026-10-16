@@ -36,10 +36,13 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   the body cache - deliberate throttling, and on the order of an hour for a 450-article day - while
   a **cache hit neither connects nor sleeps**. Warming the cache first turns the fetch phase into
   cache hits. The **number of requests to upstream is unchanged**; only the window they are spread
-  over changes, which is exactly why this is opt-in rather than the new default. The scheduled task
-  uses it, so a report that used to hold the machine for an hour finishes in a fraction of that.
-  (Related: the index does **not** read this cache - measured no gain, see `docs/DECISIONS.md`
-  D-118 - so the cache serves the display path (`search --with-text`) and this speed-up only.)
+  over changes, which is exactly why this is opt-in rather than the new default. Measured on the
+  first real run (2026-10-16, a 523-article day): **516 bodies warmed in 10 minutes** and the whole
+  `biz_daily` step took **15m49s**, where the same articles serially with throttling take over an
+  hour. The scheduled task uses it, so a report that used to hold the machine for an hour finishes
+  in a fraction of that. (Related: the index does **not** read this cache - measured no gain, see
+  `docs/DECISIONS.md` D-118 - so the cache serves the display path (`search --with-text`) and this
+  speed-up only.)
 
 ## 1.12.0
 
