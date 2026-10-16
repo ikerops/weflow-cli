@@ -1406,6 +1406,31 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-115: `search --with-text` 返回**正文**，而不是"用来匹配的那段摘录"
+
+**Status:** Active（2026-10-16 用户指出：只返回标题/分数/摘录"没什么具体意思"，要具体到某篇的内容）
+
+**Decision.** `search` 加 `--with-text [N]`（N = 每条最多多少字，默认 4000，`0` = 不开）。打开后每条结果多三个字段：
+`fullText`（**能读的正文**）、`sourceFile`（本地日报 md 的路径）、`url`（原文链接）。正文有两处来源，取**更长**的那份：
+- 日报 md：`output/biz-daily/<id 里那段相对路径>`，正文用同一套 `extract_article_body` 取；
+- **正文缓存**：`output/.cache/fetch/<md5(url)>.md` —— 日报/回填抓来的完整正文，通常比 md 更全。
+聊天记录没有这两层：**索引里那段本来就是消息全文**。
+
+**默认不开的理由是上下文不是小气**：助手、MCP、RAG 走的是同一个 `search()`，10 条 × 4000 字会把这些通路
+一次撑进 2 万字；要看正文就显式开（`--top-k 3 --with-text` 是最常用的组合）。
+
+**读不出来要说出来。** `load_record_text` 对读不到的文件返回 `None`（不是空串），`attach_full_text` 把条数
+数出来；`sourceFile` 仍然给出路径 —— 用户能自己去开那个文件，而不是以为"这篇没有正文"。
+
+**`readable_body` 与重排那份摘录的区别（别混）**：`cleanse_passage` 是喂模型的（压成一整行、截 300 字）；
+`readable_body` 是给人看的（去加粗标记、去图片语法、把链接留成文字、删"点击蓝字/在小说阅读器读本章"这类
+**整行**套话），但**保留段落**。原始文件路径在 `sourceFile` 里，想核对"有没有被我改过"就打开它对比。
+
+**实测（`用卫星遥感估算 PM2.5` 的第一条）**：日报 md 11.7 KB → 正文 1,393 汉字、正文缓存 1,462 汉字；
+整理后 `fullText` 1,723 字，含标题、作者期刊、引用格式、三条亮点、导读、**研究结论**（三重交叉验证
+R² 0.87/0.86/0.83、AOD 特征重要性 40.63%）与相关文章列表。去图片语法前那一版是 3,860 字，其中约 2,100 字
+是 `![](https://mmbiz.qpic.cn/…)` 拼成的一整行 —— 所以必须去。
+
 ## D-114: 结果侧折叠同文本转载（默认开），而索引侧**不**去重
 
 **Status:** Active（2026-10-16 实测：20 条问句的 top-5 里 7% 是同文本转载，6/20 条问句的 top-5 出现过重复）

@@ -137,6 +137,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
   lookups lose records. It changes no recall metric (the ground truth is content) - only how much distinct material
   one result list actually carries.
 
+- **`search --with-text` returns the article itself, not the excerpt it was matched on.** What a search used to hand
+  back was the title plus the ~500-character slice that the embedding was computed from - which is not the content
+  anyone wants. The content is already local: the record's `id` carries the daily markdown's relative path, and the
+  fetch cache (`output/.cache/fetch/<md5(url)>.md`) holds the **full** body. The flag adds `fullText` (readable: bold
+  markers, image syntax and 公众号 boilerplate lines removed, paragraphs kept - deliberately different from the
+  300-character, whitespace-collapsed excerpt the reranker receives), `sourceFile` (always given, so the raw file can
+  be compared against what was cleaned) and `url`; the longer of the daily markdown and the cache wins. Chat records
+  need none of this - the indexed text *is* the whole message. It is **off by default** for a context reason rather
+  than a cost one: the assistant, MCP and RAG share this `search()`, and ten results at 4,000 characters would push
+  ~20k characters into those paths. Unreadable records return `fullText: null` with `sourceFile` still set (never a
+  silent empty string). Measured on the demo query, the first hit goes from a 500-character excerpt to 1,723
+  characters of real content (citation, three highlights, abstract, and the results paragraph: R² 0.87/0.86/0.83,
+  AOD feature importance 40.63%); before image syntax was stripped it was 3,860 characters, ~2,100 of which was one
+  line of `![](https://mmbiz.qpic.cn/…)`.
+
 ## 1.11.1
 
 - **Five defects in 1.11.0's document export, all found by looking at a real export instead of the code.**

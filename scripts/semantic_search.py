@@ -953,10 +953,90 @@ def dedup_results(results):
         seen[h] = entry
         out.append(entry)
     return out
+# 正文里按"行"删掉的公众号套话（只删整行，不动正文句子）
+_BOILERPLATE_LINE = re.compile(r'^\s*(在小说阅读器读本章|去阅读|在公众号小说中沉浸阅读|点击蓝字|关注我们|一键关注|设为星标|______+|-{3,})\s*$')
+
+
+def readable_body(text):
+    """把正文整理成"能读"的样子：去加粗/斜体标记与公众号套话行，**保留段落**。
+
+    与重排那份摘录（`cleanse_passage`）不同：那个会把空白压成一行、还截断到 300 字，
+    因为它只是喂给模型的；这一份是给人看的，所以保留换行。原始文件路径在 `sourceFile` 里，
+    想核对"有没有被我改过"就打开那个文件对比。
+    """
+    out = []
+    for raw_line in (text or '').split('\n'):
+        line = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', raw_line)          # 图片语法
+        line = re.sub(r'\[([^\]]{0,80})\]\([^)]*\)', r'\1', line)     # 链接留文字
+        line = re.sub(r'\*{1,3}', '', line).strip()
+        if not line or _BOILERPLATE_LINE.match(line):
+            continue
+        out.append(line)
+    return '\n'.join(out)
+
+FULL_TEXT_LIMIT = 4000          # `--with-text` 默认给多少字（够一篇公众号全文）
+
+
+def load_record_text(item, limit=FULL_TEXT_LIMIT):
+    """把命中的记录还原成本地那份**正文** —— 索引里存的只是"用来匹配的摘录"。
+
+    这是 2026-10-16 用户提出来的：返回标题+分数没有意义，要能给出**某篇公众号的具体内容**。
+    两条来源，取更长的那份：
+      · 日报 md：`output/biz-daily/<id 里那段相对路径>`，正文用同一套 `extract_article_body` 取；
+      · 正文缓存：`output/.cache/fetch/<md5(url)>.md` —— 日报/回填抓来的**完整正文**（比 md 更全）。
+    聊天记录没有这两层：索引里那段**本来就是消息全文**。
+
+    返回 `(text, source_file, url)`；读不到时 text 为 None（**不许**静默当成"这篇没有正文"）。
+    """
+    rid = str(item.get('id') or '')
+    if not rid.startswith('article:'):
+        return (item.get('text') or ''), None, None
+
+    rel = rid[len('article:'):].replace('\\', '/')
+    path = Path(OUTPUT_ROOT) / 'biz-daily' / rel
+    if not path.exists():
+        return None, str(path), None
+    try:
+        content = path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None, str(path), None
+
+    url = None
+    match = re.search(r'^url:\s*"?([^"\n]+)"?', content, re.M)
+    if match:
+        url = match.group(1).strip()
+
+    body = extract_article_body(content, limit)
+    if url:
+        cached = Path(OUTPUT_ROOT) / '.cache' / 'fetch' / (
+            hashlib.md5(url.encode('utf-8')).hexdigest() + '.md')
+        if cached.exists():
+            try:
+                full = cached.read_text(encoding='utf-8', errors='replace').strip()
+                if len(full) > len(body):      # 缓存那份才是完整正文
+                    body = full[:limit]
+            except OSError:
+                pass
+    return readable_body(body), str(path), url
+
+
+def attach_full_text(results, limit=FULL_TEXT_LIMIT):
+    """给每条结果挂上 `fullText` / `sourceFile` / `url`（读不到的挂 None，并数出来）。"""
+    missing = 0
+    for item in results:
+        text, path, url = load_record_text(item, limit)
+        if text is None:
+            missing += 1
+        item['fullText'] = text
+        if path:
+            item['sourceFile'] = path.replace('\\', '/')
+        if url:
+            item['url'] = url
+    return results, missing
 def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = True,
            line: str = 'all', hybrid: bool = True, from_source: str = None,
            rerank_pool: int = RERANK_CANDIDATES,
-           dedup: bool = True):
+           dedup: bool = True, with_text: int = 0):
     """Semantic search with keyword fallback.
 
     `line` 在**取候选之前**就把不属于这条线的记录挡掉（把它们的相似度压成 -inf 再
@@ -1030,6 +1110,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                                               pool_size=rerank_pool)
                 if dedup:
                     results = dedup_results(results)
+                if with_text:
+                    results, _missing = attach_full_text(results, with_text)
                 return results[:top_k]
         except:
             pass
@@ -1043,6 +1125,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                                               pool_size=rerank_pool)
     if dedup:
         results = dedup_results(results)
+    if with_text:
+        results, _missing = attach_full_text(results, with_text)
     return results[:top_k]
 
 
@@ -1108,6 +1192,10 @@ def main():
     p.add_argument('--top-k', type=int, default=10)
     p.add_argument('--no-rerank', action='store_true',
                    help='不调用决策模型重排，只按向量/关键词相似度返回（回退到引入重排之前）')
+    p.add_argument('--with-text', nargs='?', type=int, const=FULL_TEXT_LIMIT,
+                   default=0, metavar='N',
+                   help='给每条命中挂上本地正文字段 fullText/sourceFile/url（默认不给；'
+                        'N 控制每条最多多少字，默认 %d）' % FULL_TEXT_LIMIT)
     p.add_argument('--no-dedup', action='store_true',
                    help='不折叠同文本的多号转载（默认折叠，并在结果里给 duplicateCount）')
     p.add_argument('--rerank-pool', type=int, default=RERANK_CANDIDATES,
@@ -1144,7 +1232,8 @@ def main():
                           rerank_results=not args.no_rerank, line=args.line,
                           hybrid=not args.no_hybrid, from_source=args.from_source,
                           rerank_pool=args.rerank_pool,
-                          dedup=not args.no_dedup)
+                          dedup=not args.no_dedup,
+                          with_text=args.with_text)
             counts = line_counts()
             result = {
                 'success': True,
@@ -1154,6 +1243,7 @@ def main():
                 'rerank': dict(RERANK_STATE),
                 'from': args.from_source,
                 'dedup': not args.no_dedup,
+                'withText': args.with_text,
                 'results': rows,
                 'indexCounts': counts,
             }
