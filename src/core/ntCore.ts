@@ -236,6 +236,18 @@ export class NtCore {
       if (e?.code === 'ENOENT') {
         return { success: false, error: 'Python not found. Install Python and add to PATH.' }
       }
+      if (e?.code === 9009) {
+        // Windows 的 9009 是"找不到命令"。最常见的原因是 PATH 上只有**微软商店的 python
+        // 占位程序**：`getPythonCommand()` 在所有候选都不过（没有真 Python / 没有 sqlcipher3）
+        // 时兜底返回裸名 `python`，正好交给那个占位程序，它一跑就以 9009 退出。
+        // 不把这条翻译出来，用户看到的是"NT scan failed (exit 9009)"，而下一步该做什么完全没有线索
+        // （2026-10-18 一位用户就是这么卡住的）。
+        return {
+          success: false,
+          error: '没有可用的 Python：NT 扫描需要 Python 3.10+ 且能 `import sqlcipher3`。'
+            + 'exit 9009 在 Windows 上通常意味着只装了商店的 python 占位程序，装一个真正的 Python 后重试',
+        }
+      }
       return { success: false, error: safeSubprocessError(e, 'NT scan failed') }
     }
   }

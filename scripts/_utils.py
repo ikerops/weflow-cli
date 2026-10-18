@@ -949,6 +949,22 @@ def get_chat_endpoint(config=None):
         return None, None
 
 
+def get_ai_engine(config=None) -> str:
+    """配置里选的对话引擎：`local` / `deepseek`（默认）/ `claude` / `ollama`。
+
+    **决策模型的 `chat` 通路必须读它**：`judgeProvider=chat` 的语义是"用**配置里的**对话模型"，
+    而"配置里的"到底指谁只有 `aiEngine` 说得清。2026-10-18 之前那条路无条件用 `deepseekApiKey`，
+    于是 `aiEngine=local` 的用户一开 `judgeProvider=chat` 就会把文章正文发去 DeepSeek ——
+    这不是"多花点钱"，是**用户明确选了不出境之后又被送出境**。
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return 'deepseek'
+    return str((config or {}).get('aiEngine') or 'deepseek').strip().lower()
+
+
 def get_openrouter_model(config=None) -> str:
     """OpenRouter 上用的模型 id（默认 `typesafe/jev-router`，即 TypeSafe 发布的决策模型）。
 

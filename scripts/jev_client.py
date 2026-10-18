@@ -429,13 +429,16 @@ class ChatJevClient(JevClient):
 
     def __init__(self, api_key, model=OPENROUTER_DEFAULT_MODEL, timeout=120,
                  max_tokens=OPENROUTER_MAX_TOKENS, base_url=OPENROUTER_BASE,
-                 extra_headers=None, provider='openrouter'):
+                 extra_headers=None, provider='openrouter', engine=None):
         super().__init__(api_key, model=model, timeout=timeout)
         self.base_url = (base_url or OPENROUTER_BASE).rstrip('/')
         self.extra_headers = dict(extra_headers or {})
         self.max_tokens = max_tokens
         # 记录自己是谁，方便落盘/报错时区分"哪条通路判的"。
         self.provider = provider
+        # `engine` 不为空时**走它**（`AIEngine.chat()`）—— 本地 Ollama / LM Studio 就是这条。
+        # 这条存在的原因：`judgeProvider=chat` 必须尊重 `aiEngine=local`（见 D-124）。
+        self.engine = engine
 
     def _endpoint(self):
         return self.base_url + '/chat/completions'
@@ -494,15 +497,8 @@ class ChatJevClient(JevClient):
         `decide.py` 与 `jev_probe.py` 读的是后一个名字，名字对不上会让成本统计静默变成 0。
         """
         prompt = build_openrouter_prompt(state, questions)
-        body = self._post(self._endpoint(), {
-            'model': self.model,
-            'messages': [{'role': 'user', 'content': prompt}],
-            'temperature': 0,
-            'max_tokens': self.max_tokens,
-        })
-        choices = body.get('choices') or [{}]
-        message = (choices[0] or {}).get('message') or {}
-        answers = _parse_json_object(message.get('content'), 'chat 响应')
+        content, usage = self._chat_once(prompt)
+        answers = _parse_json_object(content, 'chat 响应')
         for key, question in (questions or {}).items():
             if not isinstance(question, dict):
                 continue
@@ -512,6 +508,28 @@ class ChatJevClient(JevClient):
             _check_choice(key, question, answer)
             _check_score(key, question, answer)
             _check_noul(key, question, answer)
+        return answers, usage
+
+    def _chat_once(self, prompt):
+        """取一次文字回复，返回 `(content, usage)`。
+
+        有 `engine` 就走它（`AIEngine.chat()`，本地 Ollama / LM Studio 是这条）：那种情况
+        **拿不到 usage 里的 token 数与成本** —— 这是引擎层既有的边界（它只回字符串），
+        不是这里漏了；`model` 仍然会落盘，所以"谁判的"依然可查。
+        没有 `engine` 时走 OpenAI 兼容端点，token 与 cost 都能拿到。
+        """
+        if self.engine is not None:
+            content = self.engine.chat(prompt, max_tokens=self.max_tokens)
+            served = getattr(self.engine, 'model', '') or self.model
+            self.last_model = served
+            return content or '', {'model': served}
+        body = self._post(self._endpoint(), {
+            'model': self.model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0,
+            'max_tokens': self.max_tokens,
+        })
+        message = ((body.get('choices') or [{}])[0] or {}).get('message') or {}
         usage = dict(body.get('usage') or {})
         if 'prompt_tokens' in usage and 'input_tokens' not in usage:
             usage['input_tokens'] = usage['prompt_tokens']
@@ -522,7 +540,7 @@ class ChatJevClient(JevClient):
             # 才有意义：不然"线上跑的和测过的不是同一个东西"永远不可见。
             usage['model'] = body['model']
             self.last_model = body['model']
-        return answers, usage
+        return message.get('content') or '', usage
 
 
 def create_client(api_key='', model='', timeout=120, config=None):
@@ -556,6 +574,35 @@ def create_client(api_key='', model='', timeout=120, config=None):
         # 那是安全的方向（退回老路），不是静默用错通路。
         pass
     if judge_provider == 'chat':
+        # **先看用户选的是哪个引擎**：`judgeProvider=chat` 的语义是"用配置里的对话模型"。
+        # 无条件用 `deepseekApiKey` 会让 `aiEngine=local` 的用户被送出境外（D-124）。
+        engine_type = 'deepseek'
+        local_detect = None
+        try:
+            engine_type = (getattr(_utils, 'get_ai_engine')(config) or 'deepseek').strip().lower()
+            local_detect = getattr(_utils, 'detect_local_engine', None)
+        except Exception:
+            pass
+        if engine_type in ('local', 'ollama'):
+            ok, local_engine, desc = (False, None, '检测函数不可用')
+            if local_detect is not None:
+                try:
+                    ok, local_engine, desc = local_detect()
+                except Exception as error:               # noqa: BLE001
+                    desc = '%s: %s' % (type(error).__name__, error)
+            if not ok:
+                # **不退回云端**：宁可这次没有判断，也不把正文发去用户没选的地方。
+                print('[WARN] aiEngine=%s 但没检测到本地推理服务（%s）：判断器不会退回云端，'
+                      '这次不可用，判断将走 LLM 路径' % (engine_type, desc), file=sys.stderr)
+                return None
+            return ChatJevClient('local', model=getattr(local_engine, 'model', '') or 'local',
+                                 base_url=getattr(local_engine, 'base_url', '') or '',
+                                 engine=local_engine, timeout=timeout, provider='chat-local')
+        if engine_type == 'claude':
+            print('[WARN] judgeProvider=chat 只支持 OpenAI 兼容端点，aiEngine=claude 不行：'
+                  '要云端判断请用 judgeProvider=openrouter，或把 aiEngine 设回 deepseek',
+                  file=sys.stderr)
+            return None
         if not chat_key:
             print('[WARN] judgeProvider=chat 但没配对话模型的 key（deepseekApiKey）：'
                   '决策模型这次不可用，判断将退回 LLM 路径', file=sys.stderr)

@@ -1406,6 +1406,30 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-124: `judgeProvider=chat` 必须尊重 `aiEngine` —— 本地引擎的用户不许被静默送出境外
+
+**Status:** Active（2026-10-18；7 条单测覆盖分派，**未**对真实 Ollama/LM Studio 跑过端到端）
+
+**Decision.** `chat` 通路先读 `aiEngine` 再决定往哪发：
+`local`/`ollama` → `_utils.detect_local_engine()` 找到的本地服务（`provider='chat-local'`）；
+`claude` → **明确拒绝**（这条通路只支持 OpenAI 兼容端点，要用云端判断请改 `judgeProvider=openrouter`）；
+`deepseek` 或未配置 → 维持原样（`aiBaseUrl` 中转站或直连 DeepSeek）。
+**本地服务检测不到时返回 `None`，绝不退回云端**，只打一行 WARN 说明这批判断会走 LLM 路径。
+
+**Reason.** D-120 引入 `judgeProvider=chat` 时，那条分支无条件读 `deepseekApiKey`。
+它的语义是"用**配置里的**对话模型"，而"配置里的"到底指谁只有 `aiEngine` 说得清。
+所以对 `aiEngine=local` 的用户，一开 `judgeProvider=chat` 就把文章正文发去了 DeepSeek ——
+**界面上什么都没变**，这不是多花点钱，是用户明确选了不出境之后又被送出境。
+这与仓库既有的边界（"云端 AI 要保留显式权限边界"）冲突，属于必须改的缺陷而不是偏好。
+
+**Consequences / limits.**
+- 本地引擎的 `chat()` 只回字符串、没有 usage：`ChatJevClient` 在 `engine` 路径上把 `usage.model`
+  记为引擎自己的 `model`，契约校验（`_check_choice`/`_check_score`）与云端逐字同一条。
+- `claude` 不自动换成 `openrouter`：换厂商要用户自己按 key 与地区限制决定（D-120 的实测结论是
+  OpenRouter 的地区限制逐模型生效，不能替用户默认）。
+- 单测用假 engine 验证分派与契约；**真实本地服务的时延与 JSON 稳定性未测**，
+  所以 OPERATIONS 里写的是"可用"，不写"已验证质量"。
+
 ## D-123: 重排的池子**不降级**（干净 A/B 否掉了"用池 20 换 5 倍速度"），并记一次混淆教训
 
 **Status:** Active（2026-10-18 实测：五组 × 40 题；每组同题同种子）

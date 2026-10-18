@@ -982,6 +982,11 @@ program
       // 进入这里已经确认是 4.x 初始化流程。不要依赖步骤 0 的 version：
       // 微信可能是在 init 等待期间才启动，初始 version 会保持为 null。
       // Linux 分支已在步骤 3 完成配置，跳过。
+      // 这次 init 到底有没有**取得可用的密钥** —— 只有它决定结尾能不能说"初始化完成"。
+      // 扫描失败 + 沿用旧密钥 = 一次看着成功、实际什么也读不到的初始化：2026-10-18 一位用户
+      // 的 init 打在 "NT scan failed (exit 9009)" 上（Python 是商店占位程序），结尾照样报
+      // "初始化完成！"、"密钥: 已安全保存"，然后 sessions 一条都没有。
+      let ntReady = process.platform === 'linux'   // Linux 分支已在步骤 3 配好
       if (process.platform !== 'linux') {
         console.log(chalk.yellow('\n步骤 4/4: 扫描 NT 格式数据库...'))
         console.log(chalk.gray('  正在从微信内存中匹配数据库密钥...'))
@@ -999,6 +1004,7 @@ program
           }
 
           if (primaryDb) {
+            ntReady = true
             configService.set('ntDbPath', primaryDb.path)
             configService.set('ntKey', primaryDb.key)
             configService.set('ntSalt', primaryDb.salt)
@@ -1048,6 +1054,7 @@ program
           }
 
           if (derivedMessage) {
+            ntReady = true
             console.log(chalk.green('  ✓ 派生模式初始化成功 (聊天/联系人/朋友圈库已配置)'))
           } else {
             // 即使密钥未匹配，仍尝试自动发现 sns.db 路径和盐值
@@ -1066,15 +1073,24 @@ program
       }
 
       console.log(chalk.cyan('\n=============================='))
-      console.log(chalk.cyan('初始化完成! (4.x 模式)'))
+      // 只有**这次真的拿到可用密钥**才叫"完成"。否则说清楚"没就绪"以及下一步做什么 ——
+      // 报"完成"再让 sessions 空着，是最费用户时间的失败方式（他会以为是自己微信的问题）。
+      console.log(chalk[ntReady ? 'cyan' : 'yellow'](
+        ntReady ? '初始化完成! (4.x 模式)' : '初始化未完成：数据库密钥没有就绪'))
       console.log(chalk.cyan('=============================='))
       console.log(chalk.white(`数据目录: ${detected.path}`))
       console.log(chalk.white(`账号: ${selectedWxid.wxid}${selectedWxid.nickname ? ` (${selectedWxid.nickname})` : ''}`))
-      const displayKey = extractedKey || linuxNtKey
-      console.log(chalk.white('密钥: 已安全保存'))
+      console.log(chalk.white(`密钥: ${ntReady ? '已安全保存' : '未就绪（配置里的旧密钥未必能解开这个库）'}`))
       const ntDbPath = configService.get('ntDbPath')
       if (ntDbPath) {
         console.log(chalk.white(`NT 数据库: ${ntDbPath}`))
+      }
+      if (!ntReady) {
+        console.log(chalk.yellow('\n现在 sessions / messages 会读不到数据。按顺序做这三步：'))
+        console.log(chalk.yellow('  1) 在这个终端里运行 `python --version`，要能打出版本号'))
+        console.log(chalk.yellow('     （Windows 上最常见的问题是只装了商店的 python 占位程序）'))
+        console.log(chalk.yellow('  2) `pip install sqlcipher3`'))
+        console.log(chalk.yellow('  3) `weflow-cli config forget-keys`，然后重新 `weflow-cli init`'))
       }
     }
 

@@ -19,6 +19,25 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`init` no longer says "初始化完成" when it has no usable key, and a Windows `9009` now says what to
+  do.** A 2026-10-18 report ended at `NT 数据库扫描: NT scan failed (exit 9009)`, "✓ 已沿用配置中的密钥",
+  "初始化完成! (4.x 模式)" and "密钥: 已安全保存" - with `sessions` empty on every run. Two defects
+  behind it: `getPythonCommand()` falls back to the **bare name `python`** when every candidate fails its
+  probe (runnable *and* `import sqlcipher3`), and on Windows that bare name is often the Microsoft Store
+  placeholder, which exits `9009`; and the closing summary was unconditional, so a scan that never ran
+  still looked like a finished setup. The exit code is now translated into the actual requirement
+  (Python 3.10+ with `sqlcipher3`), and the summary is gated on whether **this run** obtained a key
+  (memory-scan match *or* passphrase derivation) - otherwise it prints a failed-init heading with the
+  three steps that fix it, instead of "密钥已保存" next to a key that was never checked against this
+  database.
+- **`judgeProvider=chat` now honours `aiEngine`; a local-engine user is no longer shipped abroad
+  silently.** The chat branch (D-120) read `deepseekApiKey` unconditionally, so with `aiEngine=local`
+  turning on the judge sent article text to DeepSeek while nothing in the UI changed - not a cost
+  question, but a user who chose to stay local being sent out anyway. `local`/`ollama` now goes through
+  `detect_local_engine()` (`provider='chat-local'`, same contract checks), `claude` is **refused
+  explicitly** rather than swapped for another vendor, and an undetected local service returns `None`
+  with a WARN instead of falling back to the cloud (D-124). The local path is covered by unit tests
+  with a stub engine; it has **not** been run against a live Ollama/LM Studio.
 - **A search that did not use the vector leg now says so, and `--mmr` can no longer crash on that
   path.** `search()` used to wrap its whole vector path in a bare `except: pass`, so *any* failure
   (an embedding upstream error, numpy missing, a broken `meta.json`) silently became a keyword-only

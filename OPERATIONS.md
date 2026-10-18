@@ -66,6 +66,28 @@ weflow-cli config forget-keys --yes
 weflow-cli init --refresh
 ```
 
+### `init` 结尾怎么读（以及 `NT scan failed (exit 9009)`）
+
+`init` 结尾只有两种，**别把第二种当成成功**：
+
+- `初始化完成! (4.x 模式)` —— 这次真的拿到了可用的密钥（内存扫描匹配上，或从 passphrase 派生成功）。
+- `初始化未完成：数据库密钥没有就绪` —— 扫描没匹配上、派生也没成，`sessions`/`messages` 会读不到数据。
+  这时配置里的旧密钥**没有被验证过**，所以不能当作可用。
+
+**Windows 上的 `9009`** 是"找不到命令"。在本项目里它几乎总是同一个原因：PATH 上没有**真正的** Python
+（`init` 会依次探测几个候选，能跑且能 `import sqlcipher3` 才算数），最后兜底用了裸名 `python`，
+而那个名字落在微软商店的占位程序上。按顺序做：
+
+```powershell
+python --version            # 要能打出版本号；报错或弹商店页面就是没装好
+pip install sqlcipher3
+weflow-cli config forget-keys --yes
+weflow-cli init
+```
+
+扫描失败不等于数据有问题，也不等于密钥错了 —— 它只表示**这次没有验证过**密钥。不要因为看到 9009
+就去删数据目录或反复退出登录。
+
 ## 3. 数据读取验证
 
 ```powershell
@@ -694,7 +716,18 @@ $env:OPENROUTER_KEY = '<key>'; weflow-cli config set-env openrouterApiKey OPENRO
 ```
 
 **推荐 `judgeProvider=chat`**：它复用配置里**已有的**对话模型（`aiBaseUrl` 中转站 / `aiModel` / `deepseekApiKey`），
-所以不需要新厂商、新 key，一句话就打开。本机实测（2026-10-17，同一篇真实文章）：
+所以不需要新厂商、新 key，一句话就打开。**"已有的"到底指谁看 `aiEngine`**：
+
+| `aiEngine` | `judgeProvider=chat` 往哪发 |
+| --- | --- |
+| `deepseek`（默认）/ 未配置 | `aiBaseUrl` 中转站，没配就直连 DeepSeek |
+| `local` / `ollama` | 本机检测到的本地服务（Ollama / LM Studio 等），`provider=chat-local` |
+| `local` 但没检测到服务 | **不发**，只打 WARN，这批判断走 LLM 路径（**不会退回云端**） |
+| `claude` | 明确拒绝；要云端判断请改 `judgeProvider=openrouter` |
+
+本地引擎分支有单测（假引擎验分派与契约），**没有**对真实 Ollama/LM Studio 跑过端到端（D-124）。
+
+本机实测（2026-10-17，同一篇真实文章）：
 
 | 模型 | 延迟 | 契约 | relevance / 收录概率 |
 | --- | --- | --- | --- |

@@ -265,12 +265,13 @@ class ErrorMappingTests(unittest.TestCase):
 class FactoryTests(unittest.TestCase):
     """`create_client` 的分派：默认必须是 native —— 这个开关不该替所有人改行为。"""
 
-    def make(self, provider='native', typesafe='tk', or_key='', or_model=''):
+    def make(self, provider='native', typesafe='tk', or_key='', or_model='', engine='deepseek'):
         return patch.multiple(_utils,
                               get_judge_provider=lambda config=None: provider,
                               get_openrouter_key=lambda config=None: or_key,
                               get_openrouter_model=lambda config=None: or_model,
-                              get_typesafe_key=lambda config=None: typesafe)
+                              get_typesafe_key=lambda config=None: typesafe,
+                              get_ai_engine=lambda config=None: engine)
 
     def test_默认走_native(self):
         with self.make(provider='', typesafe='tk'), \
@@ -363,6 +364,86 @@ class ChatProviderTests(unittest.TestCase):
         """国内端点没有同形的清单接口：返回空列表，而不是抛错把调用方带下去。"""
         with self.make():
             self.assertEqual(jev.create_client(config={}).models(), [])
+
+
+class LocalEngineTests(unittest.TestCase):
+    """`judgeProvider=chat` 必须尊重 `aiEngine`（D-124）。
+
+    为什么这是**隐私**而不是偏好：`chat` 通路的语义是"用配置里的对话模型"，而
+    `aiEngine=local` 是用户明确选了不出境。2026-10-18 之前那条路无条件读 `deepseekApiKey` ——
+    一开 `judgeProvider=chat`，文章正文就发去了 DeepSeek，而界面上什么都没变。
+    """
+
+    class StubEngine:
+        base_url = 'http://localhost:11434/v1'
+        model = 'qwen2.5:7b'
+
+        def __init__(self, content):
+            self.content = content
+
+        def chat(self, prompt, max_tokens=2000):
+            return self.content
+
+    def make(self, engine, detected=(True, None, ''), deepseek='dk-secret'):
+        ok, local_engine, desc = detected
+        if local_engine is None and ok:
+            local_engine = self.StubEngine(contract())
+        return patch.multiple(_utils,
+                              get_judge_provider=lambda config=None: 'chat',
+                              get_ai_engine=lambda config=None: engine,
+                              get_api_key=lambda config=None: deepseek,
+                              get_chat_endpoint=lambda config=None: (None, None),
+                              get_openrouter_key=lambda config=None: '',
+                              get_openrouter_model=lambda config=None: '',
+                              get_typesafe_key=lambda config=None: 'tk',
+                              detect_local_engine=lambda: (ok, local_engine, desc or '无可用'))
+
+    def test_本地引擎时不碰云端_key(self):
+        with self.make('local'):
+            client = jev.create_client(config={})
+        self.assertIsInstance(client, jev.ChatJevClient)
+        self.assertEqual(client.provider, 'chat-local')
+        self.assertEqual(client.api_key, 'local', '本地通路不该拿云端 key')
+        self.assertEqual(client.base_url, 'http://localhost:11434/v1')
+        self.assertEqual(client.model, 'qwen2.5:7b')
+        self.assertIsNotNone(client.engine)
+
+    def test_本地服务不可用时不退回云端(self):
+        stderr = io.StringIO()
+        with self.make('local', detected=(False, None, '无可用本地推理服务')), \
+                patch.object(sys, 'stderr', stderr):
+            client = jev.create_client(config={})
+        self.assertIsNone(client, '本地不可用时宁可没有判断，也不许改用 DeepSeek')
+        self.assertIn('不会退回云端', stderr.getvalue())
+
+    def test_claude_引擎明确拒绝而不是换厂商(self):
+        stderr = io.StringIO()
+        with self.make('claude'), patch.object(sys, 'stderr', stderr):
+            self.assertIsNone(jev.create_client(config={}))
+        self.assertIn('openrouter', stderr.getvalue())
+
+    def test_ollama_也按本地处理(self):
+        with self.make('ollama'):
+            self.assertEqual(jev.create_client(config={}).provider, 'chat-local')
+
+    def test_默认_deepseek_行为不变(self):
+        with self.make('deepseek'):
+            client = jev.create_client(config={})
+        self.assertEqual(client.provider, 'chat')
+        self.assertEqual(client.api_key, 'dk-secret')
+
+    def test_engine_路径也能满足契约(self):
+        """本地引擎只回字符串（没有 usage），但契约校验与 `last_model` 必须照常。"""
+        client = jev.ChatJevClient('local', model='local', engine=self.StubEngine(contract()))
+        answers, usage = client.decide('材料', questions())
+        self.assertEqual(answers['topic']['choice'], 'AI')
+        self.assertEqual(usage['model'], 'qwen2.5:7b')
+        self.assertEqual(client.last_model, 'qwen2.5:7b')
+
+    def test_engine_返回垃圾也照样炸(self):
+        client = jev.ChatJevClient('local', model='local', engine=self.StubEngine('这不是 JSON'))
+        with self.assertRaises(jev.JevError):
+            client.decide('材料', questions())
 
 
 class ProviderResolutionTests(unittest.TestCase):
