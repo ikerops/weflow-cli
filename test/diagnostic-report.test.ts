@@ -124,7 +124,7 @@ test('脱敏不能吃掉正常的版本号与路径（过度打码会让线索�
   assert.match(safe, /D:\\WeiXin\\4\.1\.15\.53\\Weixin\.dll/)
 })
 
-test('整份报告：含分段标题、结论、可复制说明，且不含原始密钥与用户名', () => {
+test('整份报告：含分段标题与结论，不含原始密钥与用户名，也不带尾注说明', () => {
   const input = withPatch({
     wechatClient: { ...BASE.wechatClient!, dataDirs: ['C:\\Users\\Alice\\Documents\\xwechat_files'] },
     lastError: 'NT scan failed (exit 9009)\nC:\\Users\\Alice\\AppData\\secret path',
@@ -133,7 +133,10 @@ test('整份报告：含分段标题、结论、可复制说明，且不含原�
   for (const section of ['【环境】', '【微信客户端】', '【配置】', '【结论】', '【最近一次报错原文】']) {
     assert.ok(report.includes(section), `缺分段 ${section}`)
   }
-  assert.match(report, /可整段复制给 AI/)
+  // 2026-10-19 用户明确要求去掉"以上内容可整段复制…"那句尾注：报告以结论结尾。
+  // 钉住它，免得以后有人"出于好意"把说明塞回来。
+  assert.ok(!report.includes('可整段复制'), '不该有尾注')
+  assert.ok(!report.includes('占位符'), '不该有尾注')
   assert.ok(!report.includes('Alice'), '用户名漏了')
   assert.ok(report.includes('<用户>'), '应该有占位符')
 })

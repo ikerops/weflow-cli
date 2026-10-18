@@ -233,7 +233,5 @@ export function renderDiagnosticReport(input: DiagnosticInput): string {
     say('【最近一次报错原文】')
     say(input.lastError.trim())
   }
-  say()
-  say('---- 以上内容可整段复制给 AI 或贴到 issue；已把用户名/wxid/密钥替换成占位符 ----')
   return lines.join('\n')
 }
