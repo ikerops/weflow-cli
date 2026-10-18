@@ -192,7 +192,10 @@ class PhraseFlagWarningTests(unittest.TestCase):
         sys.argv = ['semantic_search.py'] + argv
         sys.stdout, sys.stderr = self._NullOut(), err
         try:
-            with mock.patch.object(ss, 'phrase_search', fake_phrase):
+            # **不读本机的 `~/.weflow-cli/config.json`**：CI 上没有那个文件，之前这条测试
+            # 只在"作者机器上恰好有配置"时才是绿的（CI 红、本地绿，2026-10-19 实测）。
+            with mock.patch.object(ss, 'load_config', lambda *a, **k: {}), \
+                 mock.patch.object(ss, 'phrase_search', fake_phrase):
                 ss.main()
         finally:
             sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr

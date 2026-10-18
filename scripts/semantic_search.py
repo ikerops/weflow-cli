@@ -1529,7 +1529,13 @@ def main():
     if getattr(args, 'days', 90) < 1 or getattr(args, 'article_days', 30) < 1:
         json_output({'error': '--days 与 --article-days 都要 ≥ 1（0 天等于索引一个空库）'})
         return
-    config = load_config()
+    # 读不到配置不该让**不需要配置**的子命令崩：`phrase-build` 与 `search --phrase` 只读本地索引，
+    # 它们没有任何理由要求 `~/.weflow-cli/config.json` 存在（CI 上没有那个文件、本地有，于是这条
+    # 会"本地绿、CI 红"）。需要 key 的那条路会在下面自己报"缺 key"。
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
     # `getattr`：不是每个子命令都有 `--api-key`（`phrase-build` 不需要 key —— 它不调模型）。
     # 无条件读会让"建本地短语索引"直接崩在一个**与它无关**的参数上。
     api_key = (getattr(args, 'api_key', '') or os.environ.get('DASHSCOPE_API_KEY', '')
