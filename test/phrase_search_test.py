@@ -162,5 +162,53 @@ class PhraseIndexTests(unittest.TestCase):
         self.assertGreaterEqual(ss.phrase_search('沙箱逃逸')['total'], 1)
 
 
+class PhraseFlagWarningTests(unittest.TestCase):
+    """向量检索的旗标在 `--phrase` 上不生效：直接调脚本时要**出声**（CLI 那条路会直接拒绝）。
+
+    为什么值得钉：静默忽略会让人把**默认行为**当成"我调过参数的结果"——这比报错贵得多。
+    """
+
+    class _NullOut:
+        def write(self, _s):
+            pass
+
+        def flush(self):
+            pass
+
+        def reconfigure(self, **_kw):
+            pass
+
+    def _run_main(self, argv):
+        from unittest import mock
+        calls = {}
+
+        def fake_phrase(query, **_kw):
+            calls['query'] = query
+            return {'query': query, 'total': 0, 'hits': [], 'groups': []}
+
+        import io
+        err = io.StringIO()
+        old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+        sys.argv = ['semantic_search.py'] + argv
+        sys.stdout, sys.stderr = self._NullOut(), err
+        try:
+            with mock.patch.object(ss, 'phrase_search', fake_phrase):
+                ss.main()
+        finally:
+            sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+        return calls, err.getvalue()
+
+    def test_带向量旗标时打警告且照常定位(self):
+        calls, err = self._run_main(['search', '原样短语定位', '--phrase', '--mmr', '--no-rerank'])
+        self.assertEqual(calls.get('query'), '原样短语定位')
+        self.assertIn('--mmr', err)
+        self.assertIn('--no-rerank', err)
+
+    def test_不带向量旗标时不出声(self):
+        calls, err = self._run_main(['search', '原样短语定位', '--phrase'])
+        self.assertEqual(calls.get('query'), '原样短语定位')
+        self.assertNotIn('ignored', err)
+
+
 if __name__ == '__main__':
     unittest.main()

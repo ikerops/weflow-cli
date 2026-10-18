@@ -5043,6 +5043,25 @@ program
       // `--phrase` 走的是**纯本地**那条路（FTS5）：不出境、不花钱，所以它既不需要向量 key，
       // 也不需要确认门。把它当成"向量搜索的降级"会让人以为它也花钱、也发数据。
       const phrase = opts.phrase === true
+      // 下面这些旗标只属于**向量检索**那条路；`--phrase`（FTS5 原样定位）一个都用不上。
+      // 以前它们会被原样转发，然后在 Python 的 phrase 分支里被**静默忽略** —— 用户以为自己在调参，
+      // 实际上什么都没发生。这类"接受但不生效"的开关比报错更贵：它会让人把默认行为当成调过的结果。
+      if (phrase) {
+        const irrelevant: string[] = []
+        if (opts.rerank === false) irrelevant.push('--no-rerank')
+        if (opts.hybrid === false) irrelevant.push('--no-hybrid')
+        if (rerankPool != null) irrelevant.push('--rerank-pool')
+        if (opts.dedup === false) irrelevant.push('--no-dedup')
+        if (opts.withText) irrelevant.push('--with-text')
+        if (opts.fetchMissing) irrelevant.push('--fetch-missing')
+        if (opts.mmr) irrelevant.push('--mmr')
+        if (irrelevant.length) {
+          const error = `--phrase 只做原样定位，不接受 ${irrelevant.join('、')}（它们只对向量检索有意义）`
+          if (opts.json) console.log(JSON.stringify({ success: false, code: 'INVALID_ARGUMENT', error }))
+          else console.log(chalk.red(error))
+          process.exit(1)
+        }
+      }
       const preview = {
         success: true,
         dryRun: true,

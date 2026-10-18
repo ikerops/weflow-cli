@@ -79,3 +79,26 @@ test('search：声明了的旗标都得被分类、被读到、该转发的真�
       `${flag} 声明了却没人读 opts.${optName(flag)} —— 这个开关按下去不会有任何变化`)
   }
 })
+
+test('search：--phrase 与向量检索的旗标同时出现要报错，不能静默忽略', async () => {
+  // 向量检索的旗标在 `--phrase` 那条路上不生效。以前它们被原样转发、在 Python 里被丢掉，
+  // 用户以为调过参，实际跑的是默认行为 —— 这比报错更贵。这里真的起一次 CLI 验证拒绝发生在**调脚本之前**。
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const run = promisify(execFile)
+  let stdout = ''
+  try {
+    const r = await run(process.execPath,
+      ['--import', 'tsx', join(process.cwd(), 'bin', 'weflow-cli.ts'),
+        'search', '原样短语定位', '--phrase', '--mmr', '--json'],
+      { cwd: process.cwd(), timeout: 60_000, encoding: 'utf8' })
+    stdout = r.stdout
+  } catch (e: any) {
+    stdout = String(e.stdout || '')
+  }
+  const at = stdout.indexOf('{')
+  assert.ok(at >= 0, `没有 JSON 输出（拒绝发生得太晚，或根本没拒绝）：${stdout.slice(0, 200)}`)
+  const parsed = JSON.parse(stdout.slice(at))
+  assert.equal(parsed.code, 'INVALID_ARGUMENT')
+  assert.match(parsed.error, /--mmr/)
+})

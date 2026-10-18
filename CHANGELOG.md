@@ -19,6 +19,14 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`search --phrase` now refuses the vector-leg flags instead of accepting and ignoring them.**
+  `--no-rerank`, `--rerank-pool`, `--no-hybrid`, `--no-dedup`, `--mmr`, `--with-text` and
+  `--fetch-missing` describe the vector/rerank path; on the verbatim (FTS5) leg they were forwarded
+  to the script and **silently dropped**, so a reader who passed one got the default behaviour while
+  believing they had changed it. The CLI now exits with `INVALID_ARGUMENT` naming the offending
+  flags (JSON-aware), and calling `semantic_search.py` directly prints
+  `[WARN] --phrase only locates verbatim text; ignored: ...`. `--top-k`, `--line` and `--from` still
+  apply. A test spawns the real CLI to prove the rejection happens before any script call.
 - **Client-version detection keeps working on newer WeChat: the command line is no longer the only
   observation.** Since **4.1.15.53** the `Weixin.exe` main process is launched with **no switches at
   all** (`"D:\WeiXin\Weixin.exe"`), so the `--user-lib-dir` judgement that `check` relied on returned

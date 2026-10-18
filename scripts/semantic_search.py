@@ -1549,6 +1549,20 @@ def main():
         elif args.phrase:
             # 原样定位：**本地、无 key、不出境**。所以它不校验 `api_key`，
             # 也不该被当成"向量搜索的降级版"——两者问的是不同的问题。
+            # 向量检索的那些旗标在这条路上不生效。CLI 会直接拒绝这种组合；这里兜住
+            # **直接调脚本**的人：静默忽略会让人把默认行为当成"调过的结果"。
+            ignored_flags = [name for name, on in (
+                ('--mmr', getattr(args, 'mmr', False)),
+                ('--no-rerank', getattr(args, 'no_rerank', False)),
+                ('--no-hybrid', getattr(args, 'no_hybrid', False)),
+                ('--no-dedup', getattr(args, 'no_dedup', False)),
+                ('--with-text', getattr(args, 'with_text', 0)),
+                ('--fetch-missing', getattr(args, 'fetch_missing', 0)),
+                ('--rerank-pool', getattr(args, 'rerank_pool', RERANK_CANDIDATES) != RERANK_CANDIDATES),
+            ) if on]
+            if ignored_flags:
+                print('[WARN] --phrase only locates verbatim text; ignored: %s'
+                      % ', '.join(ignored_flags), file=sys.stderr)
             result = phrase_search(query, limit=args.top_k, line=args.line,
                                    from_source=args.from_source)
             result['success'] = 'error' not in result

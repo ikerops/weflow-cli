@@ -783,6 +783,12 @@ weflow-cli search "沙箱逃逸" --phrase          # 原样定位；不需要 --
 weflow-cli search "PM2.5" --phrase --from 生态环境部 --top-k 3 --json
 ```
 
+⚠️ `--phrase` 只认 `--top-k` / `--line` / `--from` 这几个参数。**向量检索的那些旗标
+（`--no-rerank`、`--rerank-pool`、`--no-hybrid`、`--no-dedup`、`--mmr`、`--with-text`、
+`--fetch-missing`）在这条路上不生效**，CLI 会直接报 `INVALID_ARGUMENT` 而不是默默忽略——
+静默忽略会让人把默认行为当成"调过参数的结果"。直接调 `scripts/semantic_search.py` 时
+则会打一行 `[WARN] ... ignored: ...`。
+
 返回里除了命中行（带 `【原文串】` 上下文、号名、日期、标题），还有 `groups`：按
 **（账号/会话 × 日期）**分组计数——"哪个号在哪天写过"直接读它。
 
