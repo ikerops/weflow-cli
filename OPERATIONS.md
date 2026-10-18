@@ -1072,6 +1072,9 @@ Register-ScheduledTask -TaskName 'WeFlow Daily' -Action $action -Trigger $trigge
 1. **跑昨天**：`pipeline.py --yesterday --prefetch-bodies`（见上面两条）。
 2. **把输出落盘**：`logs/daily-<日期>.log` 与 `daily-<日期>.err.log`（`logs/` 已 gitignore）。
    输出丢掉的计划任务只会回答"失败了"，答不了"昨天为什么短"。
+   **同一天重跑不会覆盖上一次**：开跑前，已存在的当天日志会先被挪成
+   `daily-<日期>.run<N>.log`（`N` 取第一个空位，`.err.log` 同样处理）——
+   `Start-Process` 的重定向是**覆盖**，而重跑前最想留的恰恰是刚失败那次的日志。
 3. **设 `PYTHONIOENCODING`/`PYTHONUTF8`**：这不是洁癖 —— 把 stdout 重定向到**文件**会改变 python 的
    stdout 编码（不再是控制台、而是本地代码页）。标题里出现该代码页放不下的字符时，`print` 会在
    **这一天已经写完之后**抛 `UnicodeEncodeError`，看着像失败而产物其实是好的。

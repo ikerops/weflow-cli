@@ -19,6 +19,12 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **A same-day rerun of the scheduled daily no longer erases the log of the run that failed.**
+  `scripts/daily_task.ps1` redirects through `Start-Process`, which **overwrites** its targets, so
+  retrying a failed day replaced the only evidence of what broke. Existing `daily-<date>.log` /
+  `.err.log` are now rotated to `daily-<date>.run<N>[.err].log` (first free index) before the new
+  run starts. Verified by planting a marker in both files and running the wrapper: the markers
+  landed in `.run1` and the fresh log did not contain them.
 - **`search --phrase` now refuses the vector-leg flags instead of accepting and ignoring them.**
   `--no-rerank`, `--rerank-pool`, `--no-hybrid`, `--no-dedup`, `--mmr`, `--with-text` and
   `--fetch-missing` describe the vector/rerank path; on the verbatim (FTS5) leg they were forwarded

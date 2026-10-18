@@ -55,8 +55,21 @@ if ($args.Count -eq 0) {
     }
 }
 
+# Start-Process OVERWRITES its redirect targets, so a same-day rerun would erase the log
+# of the run that just failed - exactly the one worth keeping. Rotate any existing pair to
+# daily-<date>.run<N>[.err].log first, so every attempt stays on disk. N is the first free
+# index, which also works when several reruns happen in one day.
+if (Test-Path $out) {
+    $n = 1
+    while (Test-Path (Join-Path $logDir ('daily-{0}.run{1}.log' -f $stamp, $n))) { $n++ }
+    Move-Item -Path $out -Destination (Join-Path $logDir ('daily-{0}.run{1}.log' -f $stamp, $n))
+    if (Test-Path $err) {
+        Move-Item -Path $err -Destination (Join-Path $logDir ('daily-{0}.run{1}.err.log' -f $stamp, $n))
+    }
+}
+
 # Start-Process writes the raw bytes through: no PowerShell error-record wrapping, and
-# no shell quoting to get wrong. It overwrites, hence one file per run.
+# no shell quoting to get wrong.
 $proc = Start-Process -FilePath $python -ArgumentList $allArgs -NoNewWindow -Wait -PassThru `
     -RedirectStandardOutput $out -RedirectStandardError $err
 
