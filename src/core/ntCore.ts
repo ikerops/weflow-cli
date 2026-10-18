@@ -21,6 +21,17 @@ function getPackageRoot(): string {
   return resolvePackageRoot(import.meta.url)
 }
 
+/**
+ * `scan` 的执行器。默认就是真的 `execFile`；测试注入假执行器来钉住**错误映射**。
+ *
+ * 为什么需要这个口子：Windows 上"找不到命令"的表现是子进程以 **9009** 退出，
+ * 而它没有可移植的造假方式（要有真 exe / 真 shell 行为，Linux CI 上做不出来）。
+ * 少了这条测试，`9009` 那段用户提示就会在以后的改动里悄悄退回
+ * `NT scan failed (exit 9009)` —— 2026-10-18 那位用户卡住时看到的就是这句。
+ */
+export type NtExecRunner =
+  (file: string, args: string[], options: Record<string, unknown>) => Promise<{ stdout: string }>
+
 export interface NtResult {
   success: boolean
   error?: string
@@ -191,11 +202,11 @@ export class NtCore {
    * Scan memory for NT keys and match to databases.
    * Requires WeChat to be running.
    */
-  static async scan(root?: string): Promise<NtScanResult> {
+  static async scan(root?: string, run: NtExecRunner = execFileAsync as unknown as NtExecRunner): Promise<NtScanResult> {
     try {
       const scriptPath = join(getPackageRoot(), 'scripts', 'nt_decrypt.py')
       const scanArgs = ['scan', '--json']
-      const { stdout } = await execFileAsync(getPythonCommand(), [scriptPath, ...scanArgs], {
+      const { stdout } = await run(getPythonCommand(), [scriptPath, ...scanArgs], {
         timeout: 300_000,
         maxBuffer: 10 * 1024 * 1024,
         env: createPythonProcessEnv(root ? { WEFLOW_SCAN_ROOT: root } : {}),
