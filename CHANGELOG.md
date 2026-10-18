@@ -19,6 +19,32 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **A third retrieval leg answers a question the other two cannot: "which account wrote this exact
+  phrase, and when?"** `search --phrase` locates a string **verbatim** using SQLite's bundled
+  **FTS5 with the `trigram` tokenizer** (no new dependency), returning hits with the matched run
+  highlighted plus `groups` counting them by account × date. It is a *different question*, not a
+  better ranking: BM25 scores terms and vectors score meaning, so neither can answer a code name
+  (`std::vector`), a proper noun, a policy phrase or a quotation check - and folding "the exact
+  string is absent" into a similarity ranking is a failure the reader cannot see. Four measured facts
+  set the shape: the default `unicode61` tokenizer is **useless for Chinese** (whole sentences become
+  one token - `沙箱逃逸` matched **0**); `trigram` matches **contiguous substrings, not a term AND**
+  (`光伏补贴政策` only hits the verbatim occurrence, while `补贴政策` also hits "的补贴政策" - which is
+  exactly what this leg is for, and exactly why it cannot replace the keyword leg, since
+  `光伏补贴政策` returns **0 of 10,759** articles); it has a **3-character floor**, so a short query
+  returns an explicit `tooShort` instead of "0 hits" (saying "cannot search" to mean "absent" is this
+  leg's worst failure); and query punctuation is parsed as **syntax** (`PM2.5` was a syntax error,
+  `GPT-4` a "no such column"), so the whole string is quoted as a literal (inner quotes doubled) -
+  after which `PM2.5` / `C++` / `GPT-4` all work. On this corpus: `沙箱逃逸` 2 hits across two
+  accounts, `PM2.5` **58** (including the chat line), `腾讯混元` 7, `分布式光伏` 1; `std::vector` 0.
+  **One table for the corpus, not one per article** - a table per article would mean ~96,000 tables
+  with FTS5's shadow tables, `bm25()`'s corpus-level statistics degenerating to one row each, and the
+  inverted index's only advantage thrown away. The index is **derived** from the semantic index's
+  `meta.json` (a second record enumeration would drift, silently). Build with
+  `search-index --phrase`: **local, free, no key, no confirmation gate** (that gate exists for
+  egress) - the CLI's preview says `mayUseCloudEmbedding: false` so this is not mistaken for a
+  vector call.
+
+
 - **A Jev-like decision model that works from this region is one config line away.** `judgeProvider` now
   selects among three transports for the *whole* decision layer (the daily's topic/relevance/inclusion
   judgement, search reranking, reply debt, drafted replies and route-card term selection all share one

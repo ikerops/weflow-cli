@@ -5007,6 +5007,7 @@ program
     .option('--fetch-missing [n]', '正文太薄时按 url 抓一次（最多 n 条，默认 3；复用日报缓存）')
     .option('--mmr', '对结果做 MMR 去冗余（压掉近似的同领域邻居，可能牺牲单点召回）')
     .option('--from <account>', '只查这个公众号的文章（按文件名匹配，不走语义）')
+    .option('--phrase', '把这串当**原样短语**在本地定位（FTS5/trigram，不走向量、不出境、不花钱）：回答"哪个号在哪天原样写过它"')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--dry-run', '仅预览，不读取索引或调用向量服务')
     .option('--yes', '确认执行可能调用云端向量服务的搜索')
@@ -5023,10 +5024,14 @@ program
       const rerankPool = opts.rerankPool
         ? parseCliInteger(opts.rerankPool, 'rerank-pool', 5, 500, opts.json) : null
       requireCliChoice(opts.line, ['wiki', 'chat', 'all'], 'line', opts.json)
+      // `--phrase` 走的是**纯本地**那条路（FTS5）：不出境、不花钱，所以它既不需要向量 key，
+      // 也不需要确认门。把它当成"向量搜索的降级"会让人以为它也花钱、也发数据。
+      const phrase = opts.phrase === true
       const preview = {
         success: true,
         dryRun: true,
         action: 'semantic-search.query',
+        phrase,
         topK,
         line: opts.line,
         noRerank: opts.rerank === false,
@@ -5038,14 +5043,16 @@ program
         mmr: opts.mmr === true,
         from: opts.from || null,
         readsLocalIndex: true,
-        mayUseCloudEmbedding: true,
+        mayUseCloudEmbedding: !phrase,
       }
       if (opts.dryRun) {
         if (opts.json) console.log(JSON.stringify(preview))
-        else console.log(chalk.cyan('预览：将读取本地语义索引，并可能把查询发送到已配置的向量服务。'))
+        else console.log(chalk.cyan(phrase
+          ? '预览：原样短语定位 —— 只读本地短语索引，不联网、不花钱。'
+          : '预览：将读取本地语义索引，并可能把查询发送到已配置的向量服务。'))
         return
       }
-      if (!opts.yes) {
+      if (!phrase && !opts.yes) {
         if (opts.json) {
           console.log(JSON.stringify({ ...preview, success: false, dryRun: false, code: 'CONFIRMATION_REQUIRED' }))
           process.exit(1)
@@ -5065,6 +5072,7 @@ program
       // 接这条通道之前，`OPERATIONS.md` 一直在教用户敲 `search --no-rerank`，而 CLI 会答 `unknown option`
       // —— 同一份文档里 `--line` 是通的，所以它看起来像"能用的旗标"（2026-10-11 由文档命令面那道检查发现）。
       const args: string[] = [script, 'search', '--top-k', String(topK), '--line', opts.line,
+        ...(phrase ? ['--phrase'] : []),
         ...(opts.rerank === false ? ['--no-rerank'] : []),
         ...(opts.hybrid === false ? ['--no-hybrid'] : []),
         ...(opts.from ? ['--from', opts.from] : []),
@@ -5093,6 +5101,7 @@ program
     .command('search-index')
     .description('构建语义搜索索引')
     .option('--full', '全量重建')
+    .option('--phrase', '只建**精确短语索引**（本地 FTS5/trigram，不调用向量服务、不花钱、不出境）')
     .option('--api-key <key>', 'DashScope embedding API key')
     .option('--days <n>', '聊天记录收最近多少天（默认 90）')
     .option('--article-days <n>', '日报文章收最近多少个日期目录（默认 30）')
@@ -5100,6 +5109,35 @@ program
     .option('--yes', '确认构建或重建索引')
     .option('--json', '输出 JSON 格式')
     .action(async (opts) => {
+      // `--phrase`：短语索引那条路完全不碰向量服务（也不碰聊天库——它从语义索引的 meta.json
+      // 派生），所以它不走窗口参数、不需要确认门，也不校验 key。混进下面那条路会让用户以为
+      // "建个本地的检索也要花 vector 的钱"。
+      if (opts.phrase) {
+        const phrasePreview = {
+          success: true, dryRun: true, action: 'search-index.build-phrase',
+          readsLocalData: true, usesCloudEmbedding: false, rebuildsPhraseIndex: true,
+        }
+        if (opts.dryRun) {
+          if (opts.json) console.log(JSON.stringify(phrasePreview))
+          else console.log(chalk.cyan('短语索引预览：全量重建本地 FTS5 索引（含两条线），不联网、不花钱。'))
+          return
+        }
+        const { execFile } = await import('child_process')
+        const { promisify } = await import('util')
+        const execFileAsync = promisify(execFile)
+        const pkgRoot = resolvePackageRoot()
+        const script = join(pkgRoot, 'scripts', 'semantic_search.py')
+        try {
+          const { stdout } = await execFileAsync(getPythonCommand(),
+            [script, 'phrase-build', '--line', 'all'],
+            { timeout: 600_000, maxBuffer: 10 * 1024 * 1024, env: pythonProcessEnv() })
+          console.log(opts.json ? stdout.trim() : stdout)
+        } catch (e: any) {
+          console.error(chalk.red(`\n✗ ${safeSubprocessError(e, '建短语索引失败')}`))
+          process.exit(1)
+        }
+        return
+      }
       // 窗口的**运行值由这里说了算**：默认值 + 校验 + 透传都在这一处，预览报的就是真跑的那些
       // （脚本文档里另有自己的默认值，只供手动直接跑脚本时用；CLI 这条路永远显式传参，
       // 所以两边万一漂了也不会影响实际行为）。

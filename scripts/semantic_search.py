@@ -1130,6 +1130,165 @@ def attach_full_text(results, limit=FULL_TEXT_LIMIT, fetch_missing=0):
     return results, missing, fetched
 
 
+# ===== 精确短语定位（D-121）=====
+#
+# **为什么单独有一条腿**：现有两条腿都是"相似"——bigram+BM25 按词项计分、向量按语义近似。
+# 于是"哪个号在哪天**原样**写过这句话"这类问句（专有名词、代码名、政策原文、引文核对）
+# 它们答不了，也不该硬答：把"查不到原样"混进相似度排序里，用户看不出区别。
+#
+# 实现用 SQLite **FTS5 + trigram**，标准库自带的，不需要新依赖。四个实测结论决定了这个形状
+# （2026-10-17 本机 sqlite 3.45.1，8 次探针）：
+#   1. 默认分词 `unicode61` 对中文**完全不可用**（整句一个 token：`沙箱逃逸` 命中 0）⇒ 必须 trigram；
+#   2. trigram 是**连续子串**匹配，不是词项 AND（`光伏补贴政策` 只命中原样连续的，
+#      而 `补贴政策` 命中"的补贴政策"/"补贴政策解读"）⇒ 正好是"原样定位"要的语义，
+#      也正是它**不能**替我们那条关键词腿的原因（那条要的是"分开出现也能排上分"）；
+#   3. trigram 有 **3 字下限**：`光伏`（2 字）恒空 ⇒ 短查询必须**明说**，绝不能回报"0 命中"；
+#   4. 查询里的标点会被当**语法**（`PM2.5` → `syntax error near "."`、`GPT-4` → `no such column: 4`）
+#      ⇒ 整串加引号当字面量（内部 `"` 翻倍）；加引号后 `PM2.5`/`C++`/`GPT-4` 全部正常，
+#      且 ASCII 大小写不敏感（`"pm2.5"` 能命中 `PM2.5`）。全角/半角不互认。
+#
+# **语料只从 `meta.json` 来**（语义索引的记录清单）：再写一套记录枚举，两个索引的语料迟早分叉，
+# 而"两个索引覆盖的不是同一批"这种错不会报，只会让结果看起来少。
+PHRASE_INDEX_DIR = Path(OUTPUT_ROOT) / '.phrase_index'
+PHRASE_DB = PHRASE_INDEX_DIR / 'phrase.sqlite'
+PHRASE_MIN_CHARS = 3
+PHRASE_TEXT_LIMIT = FULL_TEXT_LIMIT
+
+
+def escape_phrase(query):
+    """把整串当**字面量**（而不是 FTS 语法）：外层加引号，内部 `"` 翻倍。"""
+    return '"' + str(query or '').replace('"', '""') + '"'
+
+
+def phrase_chars(query):
+    """"有效字符数"：去掉所有空白再数。trigram 的下限按字符算，空格不参与。"""
+    return len(''.join(str(query or '').split()))
+
+
+def _phrase_label(item):
+    """「哪个号」：文章取文件名里第一个 `-` 前那段（`<账号>-<标题>.md`），聊天取会话名。
+
+    与 `--from` 的口径保持一致：那条路也是靠 `id`（文件名）里含账号名来找号的
+    （2026-10-15 修正文提取时 `source:` 随 YAML 头离开了嵌入文本，见 `search()` 里的注释）。
+    """
+    if str(item.get('type')) == 'chat':
+        return str(item.get('talker') or '')
+    rid = str(item.get('id') or '')
+    stem = rid.split(':', 1)[-1].replace('\\', '/').rsplit('/', 1)[-1]
+    if stem.endswith('.md'):
+        stem = stem[:-3]
+    return stem.split('-', 1)[0] if '-' in stem else stem
+
+
+def build_phrase_index(line: str = 'all', db_path=None, meta_path=None):
+    """从 `meta.json` **全量重建**短语索引（不调用任何模型，所以重建便宜到可以每次都全量）。
+
+    返回 `{'records', 'byLine', 'textMissing', 'db', 'bytes'}`；没有语义索引时返回 error ——
+    它是**派生**产物，不自己去找语料。
+    """
+    import sqlite3
+    meta_file = Path(meta_path or META_FILE)
+    if not meta_file.exists():
+        return {'error': '还没有语义索引，短语索引由它派生',
+                'hint': 'weflow-cli search-index --yes'}
+    meta = json.loads(meta_file.read_text(encoding='utf-8'))
+    types = line_types(line)
+    rows = []
+    text_missing = 0
+    by_line = {}
+    for item in meta:
+        if types is not None and str(item.get('type') or '') not in types:
+            continue
+        text, _source_file, _url = load_record_text(item, PHRASE_TEXT_LIMIT)
+        if not text:
+            # 读不到正文（md 被删/移动）：退回索引里那段摘录，并**数出来**告诉用户，
+            # 而不是让这篇悄悄从短语索引里消失。
+            text = item.get('text') or ''
+            text_missing += 1
+        if not text:
+            continue
+        key = str(item.get('type') or '')
+        by_line[key] = by_line.get(key, 0) + 1
+        rows.append((text, str(item.get('id') or ''), key, _phrase_label(item),
+                     str(item.get('date') or item.get('time') or ''),
+                     str(item.get('title') or '')))
+    path = Path(db_path or PHRASE_DB)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute('DROP TABLE IF EXISTS hits')
+        conn.execute("CREATE VIRTUAL TABLE hits USING fts5("
+                     "body, rid UNINDEXED, line UNINDEXED, label UNINDEXED,"
+                     " date UNINDEXED, title UNINDEXED, tokenize='trigram')")
+        conn.executemany('INSERT INTO hits(body, rid, line, label, date, title)'
+                         ' VALUES (?, ?, ?, ?, ?, ?)', rows)
+        conn.commit()
+        conn.execute('VACUUM')
+    finally:
+        conn.close()
+    return {'records': len(rows), 'byLine': by_line, 'textMissing': text_missing,
+            'line': line, 'db': str(path), 'bytes': path.stat().st_size}
+
+
+def _phrase_where(line, from_source):
+    """拼过滤条件。**与向量那条路同一口径**：`--from` 按 `id` 子串或标签精确匹配。"""
+    clauses, params = [], []
+    if line_types(line) is not None:
+        clauses.append('line IN (%s)' % ','.join('?' * len(sorted(line_types(line)))))
+        params.extend(sorted(line_types(line)))
+    if from_source:
+        want = from_source.strip().lower()
+        clauses.append('(lower(rid) LIKE ? OR lower(label) = ?)')
+        params.extend(['%' + want + '%', want])
+    return (' AND ' + ' AND '.join(clauses) if clauses else ''), params
+
+
+def phrase_search(query, limit: int = 20, line: str = 'all', from_source: str = None,
+                  db_path=None, group_limit: int = 20):
+    """原样定位：返回命中行 + 按（账号/会话 × 日期）的分组。
+
+    **两条不许静默**：查不到索引 → 报错并给建索引的命令；查询短于下限 → 明说"查不了"
+    （而不是 0 命中）。把这两种说成"没有"是这条腿最坏的失效方式。
+    """
+    import sqlite3
+    path = Path(db_path or PHRASE_DB)
+    result = {'query': query, 'escaped': escape_phrase(query), 'line': line,
+              'from': from_source, 'total': 0, 'hits': [], 'groups': []}
+    if not path.exists():
+        result.update({'error': '短语索引还没建',
+                       'hint': 'weflow-cli search-index --phrase（本地、不花钱）'})
+        return result
+    chars = phrase_chars(query)
+    if chars < PHRASE_MIN_CHARS:
+        result.update({'tooShort': True, 'chars': chars, 'minChars': PHRASE_MIN_CHARS,
+                       'note': 'trigram 分词有 %d 字下限，更短的串它切不出任何词项 —— '
+                               '这里**不报"0 命中"**，因为那是把"查不了"说成"没有"'
+                               % PHRASE_MIN_CHARS})
+        return result
+    where, params = _phrase_where(line, from_source)
+    conn = sqlite3.connect(str(path))
+    try:
+        total = conn.execute('SELECT count(*) FROM hits WHERE hits MATCH ?' + where,
+                             [result['escaped']] + params).fetchone()[0]
+        result['total'] = total
+        for label, day, n in conn.execute(
+                'SELECT label, substr(date, 1, 10) AS day, count(*) AS n FROM hits '
+                'WHERE hits MATCH ?' + where +
+                ' GROUP BY label, day ORDER BY n DESC, day DESC LIMIT ?',
+                [result['escaped']] + params + [group_limit]):
+            result['groups'].append({'label': label, 'date': day, 'count': n})
+        for rid, kind, label, date, title, ctx in conn.execute(
+                'SELECT rid, line, label, date, title, '
+                "snippet(hits, 0, '【', '】', '…', 14) FROM hits "
+                'WHERE hits MATCH ?' + where + ' ORDER BY date DESC LIMIT ?',
+                [result['escaped']] + params + [limit]):
+            result['hits'].append({'id': rid, 'type': kind, 'label': label,
+                                   'date': date, 'title': title, 'context': ctx})
+    finally:
+        conn.close()
+    return result
+
+
 def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = True,
            line: str = 'all', hybrid: bool = True, from_source: str = None,
            rerank_pool: int = RERANK_CANDIDATES,
@@ -1317,6 +1476,13 @@ def main():
                    help='不融合本地 BM25 名次（默认融合：加门控后实测三个台子都只增不减）')
     p.add_argument('--from', dest='from_source',
                    help='只查某个公众号（按 id/文件名的子串匹配，不走语义）')
+    p.add_argument('--phrase', action='store_true',
+                   help='把这串当**原样短语**在本地定位（FTS5/trigram；不走向量、不出境、不花钱）：'
+                        '回答"哪个号在哪天原样写过它"。查不到原样不等于查不到语义，收窄了问题范围')
+
+    pp = subparsers.add_parser('phrase-build',
+                               help='构建/重建精确短语索引（本地，不调用任何模型）')
+    add_line_arg(pp)
 
     add_line_arg(p)
 
@@ -1327,16 +1493,28 @@ def main():
         json_output({'error': '--days 与 --article-days 都要 ≥ 1（0 天等于索引一个空库）'})
         return
     config = load_config()
-    api_key = args.api_key or os.environ.get('DASHSCOPE_API_KEY', '') or get_dashscope_key(config)
+    # `getattr`：不是每个子命令都有 `--api-key`（`phrase-build` 不需要 key —— 它不调模型）。
+    # 无条件读会让"建本地短语索引"直接崩在一个**与它无关**的参数上。
+    api_key = (getattr(args, 'api_key', '') or os.environ.get('DASHSCOPE_API_KEY', '')
+               or get_dashscope_key(config))
 
     if args.command == 'build':
         result = build_index(api_key, full=args.full, days=args.days, article_days=args.article_days)
     elif args.command == 'update':
         result = build_index(api_key, full=False, days=args.days, article_days=args.article_days)
+    elif args.command == 'phrase-build':
+        result = build_phrase_index(line=args.line)
+        result['success'] = 'error' not in result
     elif args.command == 'search':
         query = args.query or os.environ.get('WEFLOW_SEARCH_QUERY', '')
         if not query:
             result = {"error": "missing search query"}
+        elif args.phrase:
+            # 原样定位：**本地、无 key、不出境**。所以它不校验 `api_key`，
+            # 也不该被当成"向量搜索的降级版"——两者问的是不同的问题。
+            result = phrase_search(query, limit=args.top_k, line=args.line,
+                                   from_source=args.from_source)
+            result['success'] = 'error' not in result
         else:
             # **输出带上是哪条线**（`--line` 默认文章线）。少了这一层，`--line chat`
             # 空成一片时读的人分不清"没命中"和"这条线根本没进索引"——而两者的下一步
