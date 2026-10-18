@@ -1406,6 +1406,36 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-125: 运行时版本的第二观测：命令行没 `--user-lib-dir` 时看**实际映射的 `Weixin.dll`**
+
+**Status:** Active（2026-10-18 本机实测：4.1.15.13 → 4.1.15.53 后主进程不再带该参数）
+
+**Decision.** D-107 的判据保留（命令行 `--user-lib-dir` 是**首选**：那是客户端自己说的），
+但**它不再是唯一来源**。命令行取不到时，取 `Weixin.exe` 进程实际映射的 **`Weixin.dll` 所在目录**；
+两者都没有 ⇒ `version: null` + `note`，仍然**不**拿"磁盘上只有一个版本目录"去推断。
+`note` 必须写清版本来自哪个观测（`命令行里没有 --user-lib-dir，版本取自进程实际加载的 Weixin.dll`）。
+
+**Reason.【实测】** 本机升到 **4.1.15.53** 后，`Weixin.exe` 主进程的命令行**只有一个可执行路径**
+（`"D:\WeiXin\Weixin.exe"`，没有任何开关），而 4.1.15.13 时至少有一个进程带 `--user-lib-dir`。
+结果是 D-107 的判据在**新版本上恒返回"版本未知"**——`check` 看不出用户装的是哪一版，
+而这正是它存在的理由（排障第一个要问的）。模块表给出的是同一件事的**另一种观测**：
+`Weixin.dll` 此刻确实映射在 `D:\WeiXin\4.1.15.53\Weixin.dll`。改后 `check --json` 报
+`version: 4.1.15.53`、`loadedDirs: [D:\WeiXin\4.1.15.53]`，并附一句来源说明。
+
+**两条判据为什么要分开记来源。** 命令行与模块表量的是**同一个量**，不是两个独立证据：
+命令行说 A、模块表也说 A 时，把它们混在一起去重会得到"两个目录指向不同位置"的假象，
+版本号反而会丢。所以顺序是**先①后②**，且只在①为空时才看②；`note` 记录实际用的是哪个。
+
+**边界（不猜的地方一个没少）。**
+- 模块表要**同用户、活进程**才读得到；读不到（权限/进程刚起）就是 `null`，不退回磁盘推断。
+- 模块表出现**多个**目录时照样不挑一个报版本（与命令行那条同一规则）。
+- 仍不读 `Weixin.exe` 里硬编码的版本字面量（D-107 的理由没变）。
+- 旁证一条，**不拿来推版本**：`--client_version` 的 token 从 `0xF2541F0D`（.13）变成
+  `0xF2541F35`（.53）。这与 PROJECT_STATE 里 2026-10-11 解出的**低 16 位**规则一致
+  （byte3 = 第四段 `0x35`=53；byte2 − 0x10 = 第三段 `0x1F−0x10`=15），是第三个吻合的样本；
+  但高 16 位仍是 `F254`、三个样本都是 `4.1.x`，**主次版本分不开**，所以代码照旧不拿 token
+  推版本号（模块表已经直接给出目录名，没有理由再走一条半解码的路）。
+
 ## D-124: `judgeProvider=chat` 必须尊重 `aiEngine` —— 本地引擎的用户不许被静默送出境外
 
 **Status:** Active（2026-10-18；7 条单测覆盖分派，**未**对真实 Ollama/LM Studio 跑过端到端）
@@ -2010,7 +2040,12 @@ region`，于是"重排"只在 stderr 打一行 WARN（CLI 还不转发子进程
 
 **决定。** `check` / `health_check` 新增一项**微信客户端版本**【实测】：版本取自**活进程命令行的
 `--user-lib-dir`**（`check --json` 多一个 `wechatClient` 块：`running` / `version` / `loadedDirs` /
-`note` / `unusableVersionDirs`）。三条判据写死：
+`note` / `unusableVersionDirs`）。
+
+> **2026-10-18 修订（D-125）：** 4.1.15.53 起主进程命令行**不再带** `--user-lib-dir`。命令行仍是首选，
+> 取不到时改看进程实际映射的 `Weixin.dll` 所在目录；两者都没有才报未知。下面三条判据不变。
+
+三条判据写死：
 
 1. **不读 `Weixin.exe` 里的版本字面量。**【实测·报告】它确实硬编码着、而且在本机**恰好与版本目录
    同名** —— 但它只是**兜底**（控制流显示只有主路径加载失败才会用到它；主路径读

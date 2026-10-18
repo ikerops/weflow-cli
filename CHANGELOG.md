@@ -19,6 +19,16 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Client-version detection keeps working on newer WeChat: the command line is no longer the only
+  observation.** Since **4.1.15.53** the `Weixin.exe` main process is launched with **no switches at
+  all** (`"D:\WeiXin\Weixin.exe"`), so the `--user-lib-dir` judgement that `check` relied on returned
+  "version unknown" on every machine that updated - the one field worth looking at first when reads
+  fail. It now falls back to the directory of the **`Weixin.dll` the process actually has mapped**
+  (same quantity, second observation), and the `note` says which source was used. Measured after the
+  update: `check --json` reports `4.1.15.53` instead of `null`. The no-guessing rules are unchanged -
+  multiple directories still yield no single version, an unreadable module table is still `null`
+  rather than an inference from what is on disk, and the hardcoded version literal is still not read
+  (D-125 amends D-107).
 - **`init` no longer says "初始化完成" when it has no usable key, and a Windows `9009` now says what to
   do.** A 2026-10-18 report ended at `NT 数据库扫描: NT scan failed (exit 9009)`, "✓ 已沿用配置中的密钥",
   "初始化完成! (4.x 模式)" and "密钥: 已安全保存" - with `sessions` empty on every run. Two defects

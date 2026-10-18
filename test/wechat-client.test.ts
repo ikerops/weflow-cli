@@ -25,8 +25,8 @@ import {
 
 /** 进程画像的默认值，省得每处都写那两个可选字段。 */
 const proc = (pid: number, loadedDir: string | null, dataDir: string | null = null,
-              versionToken: string | null = null) =>
-  ({ pid, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir, dataDir, versionToken })
+              versionToken: string | null = null, dllPath: string | null = null) =>
+  ({ pid, exe: 'D:\\WeiXin\\Weixin.exe', loadedDir, dataDir, versionToken, dllPath })
 
 test('命令行里取 --user-lib-dir：带引号、不带引号、带空格都要认', () => {
   assert.equal(userLibDir('"D:\\WeiXin\\Weixin.exe" --user-lib-dir="D:\\WeiXin\\4.1.15.13" --no-sandbox'),
@@ -53,6 +53,16 @@ test('进程表：ConvertTo-Json 给对象（单个进程）与数组都要收�
   assert.deepEqual(pair.map(p => p.loadedDir), ['D:\\WeiXin\\4.1.15.13', null])
   assert.deepEqual(parseProcessRows('not json'), [])
   assert.deepEqual(parseProcessRows(''), [])
+})
+
+test('进程表：带回实际映射的 Weixin.dll，读不到时是 null（不是空串）', () => {
+  const rows = parseProcessRows(JSON.stringify([
+    { ProcessId: 3, ExecutablePath: 'D:\\WeiXin\\Weixin.exe', CommandLine: '"D:\\WeiXin\\Weixin.exe"',
+      WeixinDll: 'D:\\WeiXin\\4.1.15.53\\Weixin.dll' },
+    { ProcessId: 4, ExecutablePath: 'D:\\WeiXin\\Weixin.exe', CommandLine: 'x', WeixinDll: null },
+  ]))
+  assert.equal(rows[0].dllPath, 'D:\\WeiXin\\4.1.15.53\\Weixin.dll')
+  assert.equal(rows[1].dllPath, null)
 })
 
 test('能用的版本目录 = 有 Weixin.dll 的；残留目录（只剩个别文件）要报出来', () => {
@@ -104,6 +114,34 @@ test('没在跑 / 都没带参数：版本是 null 且说清为什么（不是"�
   assert.equal(noFlag.running, true)
   assert.equal(noFlag.version, null)
   assert.match(noFlag.note, /都没有 --user-lib-dir/)
+})
+
+test('命令行没带 --user-lib-dir 时，版本取自实际加载的 Weixin.dll（4.1.15.53 起主进程这样）', () => {
+  // 2026-10-18 本机实测：升到 4.1.15.53 后主进程命令行只有 `"D:\WeiXin\Weixin.exe"`，
+  // 一个开关都没有 —— 但模块表里的 Weixin.dll 明确在 4.1.15.53\ 下。
+  const facts = summarize([proc(1, null, null, null, 'D:\\WeiXin\\4.1.15.53\\Weixin.dll')], [])
+  assert.equal(facts.version, '4.1.15.53')
+  assert.deepEqual(facts.loadedDirs, ['D:\\WeiXin\\4.1.15.53'])
+  assert.match(facts.note, /Weixin\.dll/, '说清版本是从模块表来的')
+})
+
+test('命令行优先：带了就不看模块表（两种观测一致时不能被算成两个目录）', () => {
+  const facts = summarize([
+    proc(1, 'D:\\WeiXin\\4.1.15.53', null, null, 'D:\\WeiXin\\4.1.15.53\\Weixin.dll'),
+  ], [])
+  assert.equal(facts.version, '4.1.15.53')
+  assert.deepEqual(facts.loadedDirs, ['D:\\WeiXin\\4.1.15.53'])
+  assert.equal(facts.note, '', '命令行给了就不必解释来源')
+})
+
+test('模块表里出现两个目录：仍然不挑一个报版本', () => {
+  const facts = summarize([
+    proc(1, null, null, null, 'D:\\WeiXin\\4.1.15.53\\Weixin.dll'),
+    proc(2, null, null, null, 'D:\\WeiXin\\4.1.15.13\\Weixin.dll'),
+  ], [])
+  assert.equal(facts.version, null)
+  assert.equal(facts.loadedDirs.length, 2)
+  assert.match(facts.note, /不挑一个报/)
 })
 
 test('正常一台：版本就是加载目录的名字，且重复的目录只算一次', () => {
@@ -160,8 +198,9 @@ test('客户端自报的构建 token 要报出来，但**不拿它推版本号**
   assert.equal(clientVersionToken('--client_version=1728058427'), '0x6700143B')
   assert.equal(clientVersionToken('--client_version=0'), null, '0 不是版本')
   assert.equal(clientVersionToken('x --type=renderer'), null)
-  // 它与三段式版本号的编码规则**没人解出来**（报告只说"两版高 16 位都是 F254"）⇒ 只并列报出，
-  // 不互相推导。这条断言钉的是"它就是个 token"，格式固定为 0x + 8 位大写十六进制。
+  // 低 16 位已解出（0x1F0D→4.1.15.13、0x1F35→4.1.15.53），但高 16 位在所有样本里都是 F254、
+  // 而它们都是 4.1.x ⇒ 主次版本分不开，代码不拿 token 推版本号。这条断言钉的是
+  // "它就是个 token"，格式固定为 0x + 8 位大写十六进制。
   assert.match(clientVersionToken('--client_version=1')!, /^0x[0-9A-F]{8}$/)
 })
 

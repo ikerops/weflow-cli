@@ -13,12 +13,16 @@
  *   ⇒ **读字面量判版本是错的**，哪怕它在这台机器上碰巧对。（报告里那条"2/2 实测"就是先
  *   写错、后被控制流推翻的。）
  * - 正确的判据是**活进程命令行里的 `--user-lib-dir`** —— 那是真的被加载的那个目录。
+ * - **但 4.1.15.53 起主进程不再带这个参数**（2026-10-18 本机实测：命令行只有
+ *   `"D:\WeiXin\Weixin.exe"`，一个开关都没有）。于是加一条**同一件事的第二种观测**：
+ *   进程实际映射的 `Weixin.dll` 在哪个目录 —— 那同样是"它现在加载了哪个"，只是从
+ *   进程模块表看而不是从命令行看。命令行优先（那是客户端自己说的），取不到才看模块表。
  * - 而"磁盘上有个版本目录"**不代表它能用**：本机 `D:\WeiXin\4.1.15.11\` 是升级残留，
  *   只剩 `crashpad_handler.exe` 一个文件（**本机实测** 1 个文件 / 2.1 MB；报告 §2.3 记了同一件事）。
  *
- * 所以这个模块只做两件事，且都**不猜**：从进程命令行取实际目录；把一个安装根下的版本目录
+ * 所以这个模块只做两件事，且都**不猜**：用上面两种观测取实际目录；把一个安装根下的版本目录
  * 分成"能用/不能用"（判据是**有没有 `Weixin.dll`** —— 启动器加载的就是它）。
- * 取不到就是 `null` + 一句 `note`，不拿别的来源顶替。
+ * 两种观测都取不到就是 `null` + 一句 `note`，不拿"磁盘上只有一个版本目录"这种推断顶替。
  */
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { join, win32 } from 'node:path'
@@ -37,6 +41,11 @@ export interface WechatClientProcess {
   dataDir: string | null
   /** 命令行里的 `--client_version`：客户端自己的版本 token（十进制，如 `0xF2541F0D`）。 */
   versionToken: string | null
+  /**
+   * 进程实际映射的 `Weixin.dll` 路径。**命令行没带 `--user-lib-dir` 时的第二观测**
+   * （4.1.15.53 起主进程就不带了）；读不到（权限/进程刚起）就是 null。
+   */
+  dllPath: string | null
 }
 
 /** 版本的判据与结论 —— 只跟"哪个进程加载了哪个目录"有关，读不到**别的来源**。 */
@@ -79,9 +88,9 @@ const VERSION_DIR = /^\d+(\.\d+)+$/
 // **两个镜像名都要问**：`--user-lib-dir` 在 `Weixin.exe` 那组上，而 `--wechat-files-path`
 // 只在 `WeChatAppEx.exe`（小程序运行时那组）的命令行上（**本机实测**：拿它去筛 `Weixin.exe` 会一条都取不到，
 // 于是"客户端自报数据目录"这一项**永远是空的**而看不出来）。版本那一支只认 `Weixin.exe`（见 `summarize`）。
-const PS_LIST = "$p = Get-CimInstance Win32_Process -Filter (\"Name='Weixin.exe' or Name='WeChatAppEx.exe'\") | "
-  + 'Select-Object ProcessId, ExecutablePath, CommandLine; '
-  + 'if ($p) { $p | ConvertTo-Json -Compress }'
+// `WeixinDll` 是**同一件事的第二观测**：Win32_Process 只有命令行，模块表要问进程本身。
+// 每条都单独 try —— 一个进程读不到模块不该让整张表为空（那会把"读不到"讲成"客户端没在跑"）。
+const PS_LIST = "$rows = Get-CimInstance Win32_Process -Filter (\"Name='Weixin.exe' or Name='WeChatAppEx.exe'\") | ForEach-Object { $dll = $null; try { $dll = (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules | Where-Object { $_.ModuleName -eq 'Weixin.dll' } | Select-Object -First 1 -ExpandProperty FileName } catch {}; [pscustomobject]@{ ProcessId = $_.ProcessId; ExecutablePath = $_.ExecutablePath; CommandLine = $_.CommandLine; WeixinDll = $dll } }; if ($rows) { $rows | ConvertTo-Json -Compress }"
 
 export function parseProcessRows(raw: string): WechatClientProcess[] {
   const text = String(raw || '').trim()
@@ -106,6 +115,7 @@ export function parseProcessRows(raw: string): WechatClientProcess[] {
       loadedDir: userLibDir(commandLine),
       dataDir: wechatFilesPath(commandLine),
       versionToken: clientVersionToken(commandLine),
+      dllPath: String(r.WeixinDll || '').trim() || null,
     })
   }
   return out
@@ -145,9 +155,10 @@ export function wechatFilesPath(commandLine: string): string | null {
  * 而这个是客户端自报的构建标识，两者来自不同的地方。顺带：实测本机这个值 `4065599245`
  * 正是 `0xF2541F0D`，也就是那份逆向报告从三处（反编译 / 插件 manifest / UA）定下来的版本号。
  *
- * ⚠️ **不给"版本号"**：token 与三段式版本号之间的编码规则**没人解出来**（报告只确认"旧版
- * `0xF2541D0C` → 新版 `0xF2541F0D`，高 16 位两版都是 `F254`"）。所以它只作为**并列的第二来源**
- * 报出去，不拿它去推版本号。
+ * ⚠️ **不给"版本号"**：低 16 位已解出（byte3 = 第四段；byte2 − 0x10 = 第三段 ——
+ * `0xF2541F0D`→`4.1.15.13`、`0xF2541F35`→`4.1.15.53` 等三个样本都吻合），但高 16 位在
+ * 所有样本里都是 `F254`、而它们都是 `4.1.x`，**主次版本分不开**。所以它只作为并列来源报出去，
+ * 不拿它去推版本号（模块表已经直接给出加载目录，没有理由再走一条半解码的路）。
  */
 export function clientVersionToken(commandLine: string): string | null {
   const m = /--client_version\s*=\s*(\d+)/.exec(String(commandLine || ''))
@@ -268,27 +279,47 @@ export function summarize(processes: WechatClientProcess[],
   // —— 于是过滤出 0 个启动器、版本退回"未知"，在 Windows 上还看不出来（CI 的 ubuntu 上红了 4 条）。
   // 在 Windows 上 `win32.*` 与平台版完全等价，所以目标机器的行为一点没变。
   const launchers = processes.filter(p => win32.basename(p.exe).toLowerCase() === 'weixin.exe')
-  const seen = new Map<string, string>()
-  for (const p of launchers) {
-    if (!p.loadedDir) continue
-    const shown = p.loadedDir.replace(/[\\/]+$/, '')
-    if (!shown) continue
-    const key = shown.toLowerCase()
-    if (!seen.has(key)) seen.set(key, shown)
+  // 规范形去重（去尾分隔符、大小写折叠）：同一个目录的两种写法是**一个**目录，
+  // 不折算会被当成"两个进程指向不同目录"从而拒绝给出版本号。
+  const canonical = (dir: string | null): string | null => {
+    const shown = String(dir || '').replace(/[\\/]+$/, '')
+    return shown || null
   }
-  const loadedDirs = [...seen.values()]
+  const dedupe = (dirs: Array<string | null>): string[] => {
+    const seen = new Map<string, string>()
+    for (const dir of dirs) {
+      const shown = canonical(dir)
+      if (!shown) continue
+      const key = shown.toLowerCase()
+      if (!seen.has(key)) seen.set(key, shown)
+    }
+    return [...seen.values()]
+  }
+  // ① 命令行（客户端自己说的）。② 进程实际映射的 `Weixin.dll`（4.1.15.53 起只有这个可用）。
+  // **两种观测量的是同一件事**，所以先在①里找，①空了才看② —— 混在一起算会把"命令行说 A、
+  // 模块表说 A"这种一致情形误当成两个目录，反而把版本号弄丢。
+  let loadedDirs = dedupe(launchers.map(p => p.loadedDir))
+  let dirSource: 'flag' | 'dll' | null = loadedDirs.length ? 'flag' : null
+  if (!loadedDirs.length) {
+    loadedDirs = dedupe(launchers.map(p => (p.dllPath ? win32.dirname(p.dllPath) : null)))
+    if (loadedDirs.length) dirSource = 'dll'
+  }
   let version: string | null = null
   let note = ''
   if (!launchers.length) {
     note = '客户端没在运行 ⇒ 版本未知（`--user-lib-dir` 只有进程知道）'
   } else if (!loadedDirs.length) {
-    note = `在跑 ${launchers.length} 个进程，但命令行里都没有 --user-lib-dir`
+    note = `在跑 ${launchers.length} 个进程，但命令行里都没有 --user-lib-dir（也读不到已加载的 Weixin.dll）`
   } else if (loadedDirs.length > 1) {
     // **不猜**：多个目录各有各的来源（子进程可以指到不同的库），挑一个报出去就是编。
     // 目录本身照旧列出来（那是实测到的），只是不给"版本号"这个单一结论。
     note = `有 ${loadedDirs.length} 个不同的目录在使用，不挑一个报版本`
   } else {
     version = win32.basename(loadedDirs[0])
+    // 版本拿到了，但要说清它**从哪来** —— 两个来源都成立时结论一样，来源不同却影响排查。
+    if (dirSource === 'dll') {
+      note = '命令行里没有 --user-lib-dir，版本取自进程实际加载的 Weixin.dll'
+    }
   }
   return {
     running: processes.length > 0,
