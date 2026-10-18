@@ -24,7 +24,12 @@ WeFlow CLI is a local-first command-line tool and MCP server for user-authorized
   mapped (4.1.15.53's main process carries **no** switches at all - D-125), **not** from the version literal inside
   `Weixin.exe` (that one is only a fallback for when the primary load path fails; two of this machine's four version
   *directories* are install leftovers, one of which holds a single file - see `docs/CONTACT_DB_SCHEMA.md`, which also
-  records which directories are actually usable).
+  records which directories are actually usable). **4.1.15.53 read paths verified on 2026-10-18** after an
+  in-place upgrade from 4.1.15.13: the existing derived keys still open the shards, and `sessions`,
+  `messages`, `contacts`, `daily-stats` (official-account DB), `fav` (favorites DB) and `sns stats`
+  (4,140 cached posts) all returned data. The customer-reported `init` failure (`NT scan failed (exit
+  9009)`) is therefore **not** a client-version problem; the `9009` message itself was verified
+  end-to-end against a real process that exits `9009`.
 
 ## Verified Capabilities
 
