@@ -19,6 +19,19 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`weflow-cli check --report`: a paste-ready, redacted diagnosis.** It prints the environment
+  (Node / `python --version` / `sqlcipher3` & friends), the WeChat client actually loaded and whether
+  its data directory matches the configured one, whether a key/passphrase is configured, and then a
+  **verdict** — "Python unusable", "missing sqlcipher3", "not initialised", "client not running",
+  "reading a different database" — each with the next command to run. Usernames, `wxid`s and
+  key-shaped strings become `<用户>` / `wxid_<已隐藏>` / `<密钥>`; message bodies and key values never
+  enter it. `sessions` printing "未找到会话" and a failed `init` now point at it, because that is the
+  point where "no sessions" and "cannot read them" used to look identical (the same root cause was
+  reported as four different problems between 2026-08 and 2026-10).
+- **`wechatClient.running` and its explanation no longer contradict each other.** It used to be
+  `any WeChat process`, while the note was keyed on `Weixin.exe`, so "only WeChatAppEx is running"
+  produced `运行中: 是` next to `客户端没在运行`. Both now use the launcher process; the note names
+  the helper processes when that is what it saw.
 - **A same-day rerun of the scheduled daily no longer erases the log of the run that failed.**
   `scripts/daily_task.ps1` redirects through `Start-Process`, which **overwrites** its targets, so
   retrying a failed day replaced the only evidence of what broke. Existing `daily-<date>.log` /

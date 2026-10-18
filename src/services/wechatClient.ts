@@ -307,7 +307,13 @@ export function summarize(processes: WechatClientProcess[],
   let version: string | null = null
   let note = ''
   if (!launchers.length) {
-    note = '客户端没在运行 ⇒ 版本未知（`--user-lib-dir` 只有进程知道）'
+    // **`running` 与这句话必须说同一件事**：以前 `running` 看的是"进程表里有没有任何微信进程"，
+    // 而 note 看的是"有没有 Weixin.exe"，于是"只有 WeChatAppEx（小程序容器）在跑"时
+    // 输出会是"运行中: 是 / 客户端没在运行" —— 两句话互相打脸（2026-10-19 在 `check --report`
+    // 的实跑里一眼看到）。对用户来说"客户端在跑"就是主程序在跑，所以两个判据统一到 launchers。
+    note = processes.length
+      ? `只看到 ${processes.length} 个辅助进程（WeChatAppEx 等），主程序 Weixin.exe 没在运行 ⇒ 版本未知`
+      : '客户端没在运行 ⇒ 版本未知（`--user-lib-dir` 只有进程知道）'
   } else if (!loadedDirs.length) {
     note = `在跑 ${launchers.length} 个进程，但命令行里都没有 --user-lib-dir（也读不到已加载的 Weixin.dll）`
   } else if (loadedDirs.length > 1) {
@@ -322,7 +328,8 @@ export function summarize(processes: WechatClientProcess[],
     }
   }
   return {
-    running: processes.length > 0,
+    // 主程序在不在（与上面的 note 同一判据）。辅助进程不算"客户端在运行"：读库、取版本都靠 Weixin.exe。
+    running: launchers.length > 0,
     loadedDirs,
     version,
     note,

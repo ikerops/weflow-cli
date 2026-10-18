@@ -1406,6 +1406,29 @@ which is what the gate is for.
   semantics are not reliable here), as is any automatic labelling: there is no gold standard for "is this
   draft right", so the feature records what it judged and says so rather than claiming calibration.
 
+## D-126: 排障输出必须**判定过**且**可整段复制**（`check --report`），脱敏是硬约束
+
+**Status:** Active（起因：同一个根因在 2026-08～10 被报成了四种不同问题 —— issue #3「无法通过步骤4获取key」、
+#9「密钥解不开了」、#10「读不到近期记录」，以及 2026-10-18 那封「sessions 找不到会话」的邮件）
+
+**决定。** `weflow-cli check --report` 输出一段给人（和 AI）读的文本，包含环境、微信客户端、配置三项事实，
+以及**结论**：每条结论是「卡在哪一步 + 下一步运行什么」。三条约束：
+
+1. **判定，不是罗列。** 只把 `sqlcipher3: false` 打出来，用户仍然不知道这意味着什么；报告必须说
+   「缺 sqlcipher3，运行 `pip install sqlcipher3`」，并且**不要把"缺 sqlcipher3"报成"Python 不可用"**
+   （那会让人去重装 Python，问题不变 —— 有测试钉住这两条不能混）。
+2. **脱敏是硬约束。** 报告里出现的东西只有：布尔状态、版本号、路径（用户名换成 `<用户>`）、
+   命令名、依赖名。**密钥与口令的值连读都不读**（只传 `messageKeyConfigured: boolean`），
+   聊天内容从不进入；`wxid` 与密钥形态字符串由 `redactForReport` 兜底替换。原因是这份文本的
+   目的地是公开 issue / 第三方 AI —— AGENTS.md 明令禁止把这些放进去。
+3. **纯函数生成。** `renderDiagnosticReport(input)` 不读文件、不碰配置，所以「结论对不对」「脱敏漏没漏」
+   都能用单元测试钉；`--json`（给机器）与 `--report`（给人）共用**同一份探测结果**，避免两个分支
+   出现「JSON 说可用、报告说不可用」。
+
+**没做的（明写）**：不自动上传、不联网、不写入文件；不做通用 PII 扫描（过度打码会把
+"路径里有中文目录"这种真线索删掉）。报告不会替代日志 —— 具体命令的报错原文仍要用户附上，
+报告末尾也是这么写的。
+
 ## D-125: 运行时版本的第二观测：命令行没 `--user-lib-dir` 时看**实际映射的 `Weixin.dll`**
 
 **Status:** Active（2026-10-18 本机实测：4.1.15.13 → 4.1.15.53 后主进程不再带该参数）

@@ -1565,11 +1565,22 @@ weflow-cli scene unbind wxid_xxx --yes
 
 ## 7. 常见问题
 
+**卡住时先跑这一条：**
+
+```powershell
+weflow-cli check --report
+```
+
+它输出一段**已经判定过、且脱敏**的文本：环境（Node/Python/依赖）、微信客户端版本与数据目录是否和配置对得上、配置里有没有密钥，最后是**结论**——直接写“卡在哪一步、下一步做什么”（Python 不可用 / 缺 sqlcipher3 / 还没初始化 / 客户端没在跑 / 数据目录不是同一份）。
+
+这段可以整段复制给 AI 或贴到 issue：用户名、wxid、密钥形态的字符串会被替换成 `<用户>` / `wxid_<已隐藏>` / `<密钥>`，聊天内容与密钥值从不进入这份报告。**比口头描述现象省事得多**——2026-10-18 之前同一个根因被报成了四种不同问题（issue #3 / #9 / #10 与一封邮件），就是因为现象描述里缺了这些事实。
+
 | 现象 | 处理 |
 | --- | --- |
 | 找不到数据目录 | 先 `init --path`，再 `--search-drives`，最后 `--full-scan`。 |
 | `Python not found` | 安装 Python 并确保当前 PowerShell 能执行 `python --version`。 |
 | 缺少 `sqlcipher3` 等依赖 | 用同一个 Python 执行 `python -m pip install -r requirements.txt`，再 `weflow-cli check`。 |
+| `sessions` 显示"未找到会话"但微信里明明有聊天 | 先 `weflow-cli check --report` 看结论：这多半是读取那一步没成功，不是"没有会话"。 |
 | `WCDB ... -1006` | 检查 NT 配置和数据库路径，不要只看 WCDB 降级信息；必要时刷新初始化。 |
 | 日报缺昨天 | 无日期运行 `daily` 会检查并补齐昨天；补齐失败会停止今天，不覆盖失败状态。 |
 | `daily --dry-run` 不识别 | 确认使用的是当前源码或最新发布包；当前源码支持该参数，旧 npm 包可能落后。 |

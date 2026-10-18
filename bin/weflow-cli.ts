@@ -11,6 +11,7 @@ import { dbPathService } from '../src/core/dbPathService.js'
 import { keyService } from '../src/core/keyService.js'
 import { NtCore } from '../src/core/ntCore.js'
 import { configService } from '../src/services/configService.js'
+import { renderDiagnosticReport } from '../src/services/diagnosticReport.js'
 import { chatService } from '../src/services/chatService.js'
 import { emptyMessagesNote, looksLikeTalkerId } from '../src/services/messageQuery.js'
 import { exportService } from '../src/services/exportService.js'
@@ -1091,6 +1092,11 @@ program
         console.log(chalk.yellow('     （Windows 上最常见的问题是只装了商店的 python 占位程序）'))
         console.log(chalk.yellow('  2) `pip install sqlcipher3`'))
         console.log(chalk.yellow('  3) `weflow-cli config forget-keys`，然后重新 `weflow-cli init`'))
+        // 这三步是"最常见的原因"，不是诊断结论。真卡住时让用户拿到一份**已经判定过**的事实，
+        // 而不是再让他把现象口头描述一遍（那正是 issue #3/#9/#10 每次都要重来一遍的原因）。
+        console.log(chalk.yellow('\n想先看清到底卡在哪一步，运行：'))
+        console.log(chalk.cyan('  weflow-cli check --report'))
+        console.log(chalk.gray('  它会给出结论（Python / sqlcipher3 / 密钥 / 数据目录），那段文字可以直接复制给 AI 或贴到 issue。'))
       }
     }
 
@@ -1361,6 +1367,12 @@ program
     if (sessions.length === 0) {
       if (opts.json) { console.log(JSON.stringify({ success: true, sessions: [] })); return }
       console.log(chalk.gray('未找到会话'))
+      // "0 条"有两种完全不同的原因：真的没有会话，和**初始化/密钥坏了读不出来**。
+      // 后者以前只显示这一句，用户就去猜"是不是我微信坏了 / 版本太新"（issue #3/#9/#10 的老路：
+      // 同一个根因被描述成三种现象）。给一条能立刻分清的动作，比让他猜有用。
+      console.log(chalk.yellow('\n如果微信里明明有聊天记录，那多半是读取这一步没成功。运行这条看结论：'))
+      console.log(chalk.cyan('  weflow-cli check --report'))
+      console.log(chalk.gray('  它会指出卡在哪一步（Python / sqlcipher3 / 密钥 / 数据目录），那段文字可直接复制给 AI 或贴到 issue。'))
       return
     }
 
@@ -7526,6 +7538,7 @@ program
   .command('check')
   .description('检查运行环境（Python、pip 依赖、数据库配置）')
   .option('--json', '输出 JSON 格式，不包含数据库路径或密钥')
+  .option('--report', '输出一段可直接粘贴给 AI / 贴进 issue 的诊断结论（已脱敏：用户名与 wxid 换占位符，不含密钥与聊天内容）')
   .action(async (opts) => {
     // 微信客户端的**版本**与它自报的**数据目录**：两个分支都要用，所以在这里算一次。
     // 判据见 `wechatClient.ts`（版本取活进程的 `--user-lib-dir`；取不到就是"未知"，不是"没问题"）。
@@ -7549,7 +7562,9 @@ program
     const dataDirMatchesConfig = (client.dataDirs.length && configuredRoot)
       ? client.dataDirs.some(dir => samePath(dir, configuredRoot))
       : null
-    if (opts.json) {
+    // `--json`（给机器）与 `--report`（给人/AI）用的是**同一份事实**，所以只探测一次：
+    // 两个分支各写一份探测，迟早会出现"JSON 说 Python 可用、报告说不可用"这种自相矛盾。
+    const collectCheckData = async () => {
       const { execFileSync } = await import('child_process')
       const requiredDependencies = ['sqlcipher3', 'html2text', 'zstandard', 'cryptography']
       const optionalDependencies = ['scrapling']
@@ -7623,9 +7638,48 @@ program
           caveats: client.caveats,
         },
       }
-      console.log(JSON.stringify(data, null, 2))
+      return data
+    }
+
+    if (opts.json) {
+      console.log(JSON.stringify(await collectCheckData(), null, 2))
       return
     }
+
+    // `--report`：一段**可整段复制**的诊断块（脱敏后）。这是"用户说不清、我们又猜不准"
+    // 那个循环的出口 —— issue #3/#9/#10 与 2026-10-18 那封邮件都是同一个根因被描述成四种现象。
+    if (opts.report) {
+      const data = await collectCheckData()
+      console.log(renderDiagnosticReport({
+        cliVersion: CLI_VERSION,
+        // 本地时间：用户对照日志/截图时要能直接对上，UTC 会多一步换算
+        generatedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+        platform: process.platform,
+        arch: process.arch,
+        nodeVersion: process.versions.node,
+        python: {
+          command: getPythonCommand(),
+          available: !!data.runtime.python.available,
+          version: String(data.runtime.python.version || ''),
+        },
+        dependencies: data.dependencies,
+        configuration: data.configuration,
+        keys: {
+          messageKeyConfigured: !!configService.get('ntKey') || !!configService.get('decryptKey'),
+          passphraseConfigured: !!configService.get('favPassphrase'),
+        },
+        wechatClient: {
+          running: data.wechatClient.running,
+          version: data.wechatClient.version,
+          note: data.wechatClient.note,
+          dataDirMatchesConfig: data.wechatClient.dataDirMatchesConfig,
+          dataDirs: data.wechatClient.dataDirs,
+          unusableVersionDirs: data.wechatClient.unusableVersionDirs,
+        },
+      }))
+      return
+    }
+
     console.log(chalk.cyan('🔍 WeFlow CLI 环境检查\n'))
 
     // 1. Node.js
