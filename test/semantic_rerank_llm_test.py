@@ -161,7 +161,41 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(all('rerankScore' in r for r in out))
         self.assertEqual(ss.RERANK_STATE['provider'], 'llm')
 
-    def test_contract_success_is_not_overridden(self):
+    def test_transport_说清是谁在服务而不是哪套契约(self):
+        """`provider` 只说明"走的是 Jev 那套契约"，**不说明谁在服务**。
+
+        2026-10-18 实测踩到这个：`judgeProvider=chat` 时契约由 DeepSeek 满足，而状态里写着
+        `provider=typesafe` —— 差点被读成"原生通了"（同一批查询里另一部分又退了 llm）。
+        所以 `transport` 记客户端的身份：`chat` / `openrouter` / `typesafe`（原生没有 provider 属性）。
+        """
+
+        class FakeChatClient:
+            provider = 'chat'
+
+        def fake_rerank(query, results, client=None, pool_size=20):
+            ss.RERANK_STATE.update(provider='typesafe', degraded=False, error=None, scored=4)
+            return [dict(r, rerankScore=0.9) for r in results]
+
+        ss.rerank = fake_rerank
+        ss.llm_rerank = lambda *a, **kw: (_ for _ in ()).throw(AssertionError('不该退'))
+        ss.rerank_dispatch('q', items(), client=FakeChatClient())
+        self.assertEqual(ss.RERANK_STATE['provider'], 'typesafe')
+        self.assertEqual(ss.RERANK_STATE['transport'], 'chat')
+
+    def test_transport_退到对话模型时是_llm(self):
+        def fake_rerank(query, results, client=None, pool_size=20):
+            ss.RERANK_STATE.update(provider='typesafe', degraded=True, error='boom', scored=0)
+            return results
+
+        def fake_llm(query, results, **kw):
+            ss.RERANK_STATE.update(provider='llm', degraded=False, error=None, scored=len(results))
+            return [dict(r, rerankScore=1) for r in results]
+
+        ss.rerank, ss.llm_rerank = fake_rerank, fake_llm
+        ss.rerank_dispatch('q', items(), client=object())
+        self.assertEqual(ss.RERANK_STATE['transport'], 'llm')
+
+    def test_契约成功时不被覆盖(self):
         def fake_rerank(query, results, client=None, pool_size=20):
             ss.RERANK_STATE.update(provider='typesafe', degraded=False, error=None, scored=4)
             return [dict(r, rerankScore=0.9) for r in results]

@@ -626,6 +626,13 @@ def build_rerank_questions(count):
 # 原来的写法里"重排失败"只往 stderr 打一行 WARN，而 CLI 不转发子进程 stderr，
 # 于是"没报错"会被读成"重排过了"。状态放这里，主流程把它塞进 JSON。
 RERANK_STATE = {'provider': None, 'degraded': False, 'error': None, 'scored': 0}
+# 向量那条腿这次到底跑了没有、没跑是为什么、以及顺手算出的每线条数（省一次 13.5 MB 的解析）。
+# 与 `RERANK_STATE` 同一个形状：`search()` 开头重置、`main()` 把它带进返回的 envelope。
+#
+# 为什么要这个：`search()` 原来有一个**裸 `except: pass`**，于是"向量路径任何异常"都会变成
+# "静默只搜关键词"，而返回里照样写着 `hybrid: true` —— 这是最难看出来的一种失效，
+# 也让所有"快慢/好坏"的对比都可能落在不同路径上（2026-10-18 审阅时确认）。
+VECTOR_STATE = {'used': False, 'fallback': None, 'counts': None}
 
 _RERANK_LLM_RUBRIC = (
     '给每条候选打 0-100 分，判据是**它是否直接回答了问题**（"话题相近"不算）：'
@@ -724,11 +731,16 @@ def rerank_dispatch(query, results, client=None, pool_size=RERANK_CANDIDATES):
 
     两个都失败时返回原序，并把 `RERANK_STATE` 留在"降级"上 —— 别让"没重排"看起来像"重排过了"。
     """
-    RERANK_STATE.update(provider=None, degraded=False, error=None, scored=0)
+    RERANK_STATE.update(provider=None, degraded=False, error=None, scored=0, transport=None)
     if client is not None:
         out = rerank(query, results, client, pool_size=pool_size)
+        # **`provider` 记的是"哪套契约"**（`typesafe`），不是"谁在服务"：`judgeProvider=chat` 时
+        # 契约是由 DeepSeek 类客户端满足的，只看 `provider` 会读成"原生通了"（2026-10-18 实测踩到：
+        # 同一批查询里有时 provider=typesafe 其实走的是 deepseek-flash）。所以再记一个 `transport`。
+        RERANK_STATE['transport'] = getattr(client, 'provider', 'typesafe')
         if not RERANK_STATE['degraded'] and RERANK_STATE['scored']:
             return out
+    RERANK_STATE['transport'] = 'llm'
     return llm_rerank(query, results, pool_size=pool_size)
 def rerank(query, results, client=None, pool_size=RERANK_CANDIDATES):
     """用**一次**决策请求给检索结果重排。
@@ -1305,6 +1317,9 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
     "静默少搜一半"——后者在这个仓库里是最贵的那类 bug。
     """
     types = line_types(line)   # 认不出的线在这里就报错，不静默当 all
+    VECTOR_STATE.update(used=False, fallback=None, counts=None)
+    # `--mmr` 在 fallback 里也要用 `vectors`；只在 try 里赋值会让它**未绑定**（NameError）。
+    vectors = None
     # Try embedding-based search first
     if VECTORS_FILE.exists() and META_FILE.exists():
         try:
@@ -1319,6 +1334,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                 meta = meta[:rows]
             elif rows < int(vectors.shape[0]):
                 vectors = vectors[:rows]
+            # 顺手把每线条数算掉：`main()` 原来会再解析一遍同一份 meta（69 + 56 ms/次）
+            VECTOR_STATE['counts'] = _counts_from_meta(meta)
             query_embeddings = get_embeddings([query], api_key)
             if query_embeddings and not all(v == 0 for v in query_embeddings[0]):
                 query_vec = np.array(query_embeddings[0], dtype=np.float32)
@@ -1374,9 +1391,17 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
                     results = mmr_select(results, vectors, top_k)
                 for _item in results:                 # `_row` 只是内部用的，别漏进输出
                     _item.pop('_row', None)
+                VECTOR_STATE['used'] = True
                 return results[:top_k]
-        except:
-            pass
+        except Exception as error:
+            # **显式降级**，原因留下来。原来是裸 `except: pass`：向量路径任何异常都会变成
+            # "静默只搜关键词"，而返回里照样写着 `hybrid: true` —— 那是最难看出来的一种失效，
+            # 也让"快慢/好坏"的对比可能落在不同路径上。另外裸 except 会吞掉 KeyboardInterrupt。
+            VECTOR_STATE['fallback'] = '%s: %s' % (type(error).__name__, error)
+
+    if not VECTOR_STATE['used'] and VECTOR_STATE['fallback'] is None:
+        # 没异常也没返回 —— 最常见的原因是 embedding 拿到空/全零（上游失败）。
+        VECTOR_STATE['fallback'] = '未做向量检索（embedding 为空或全零）'
 
     # Fallback: keyword search
     results = keyword_search(query, max(top_k, RERANK_CANDIDATES) if rerank_results else top_k,
@@ -1390,7 +1415,8 @@ def search(query: str, api_key: str, top_k: int = 10, rerank_results: bool = Tru
     if with_text:
         results, _missing, _fetched = attach_full_text(results, with_text,
                                                       fetch_missing=fetch_missing)
-    if mmr:
+    if mmr and vectors is not None:
+        # 向量没拿到时**不能**做 MMR（它需要矩阵）；以前这里会 NameError。
         results = mmr_select(results, vectors, top_k)
     for _item in results:                 # `_row` 只是内部用的，别漏进输出
         _item.pop('_row', None)
@@ -1411,6 +1437,17 @@ def line_counts() -> dict:
         meta = json.loads(META_FILE.read_text(encoding='utf-8'))
     except Exception:
         return counts
+    return _counts_from_meta(meta)
+
+
+def _counts_from_meta(meta) -> dict:
+    """从**已经解析好**的 meta 算每线条数（`line_counts` 与 `search()` 共用这一份）。
+
+    抽出来是让 `search()` 复用自己刚解析的那份：它原来在返回之后又被 `main()` 调
+    `line_counts()` **再解析一遍**同一个 13.5 MB 文件（实测 69 + 56 ms）。两份实现分开
+    写更糟 —— 两处解析同一份文件迟早会漂，而漂的表现是"条数对不上但谁都不报错"。
+    """
+    counts = {line: 0 for line in LINE_CHOICES}
     for item in meta:
         t = str(item.get('type', ''))
         for line, types in LINE_TYPES.items():
@@ -1527,12 +1564,17 @@ def main():
                           with_text=args.with_text,
                           fetch_missing=args.fetch_missing,
                           mmr=args.mmr)
-            counts = line_counts()
+            # `search()` 本来就解析过 meta，顺手把每线条数算在 `VECTOR_STATE['counts']` 里；
+            # 只有它没算（走了关键词 fallback）时才重新解析。省掉一次 13.5 MB 的解析。
+            counts = VECTOR_STATE.get('counts') or line_counts()
             result = {
                 'success': True,
                 'line': args.line,
                 'lineLabel': line_label(args.line),
                 'hybrid': not args.no_hybrid,
+                # **这次到底走没走向量**：没走时把原因写出来。缺了它，"只搜到关键词结果"
+                # 与"关键词结果就是这样"在返回里长得一模一样。
+                'vector': {'used': VECTOR_STATE['used'], 'fallback': VECTOR_STATE['fallback']},
                 'rerank': dict(RERANK_STATE),
                 'from': args.from_source,
                 'dedup': not args.no_dedup,

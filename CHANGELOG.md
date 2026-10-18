@@ -19,6 +19,28 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **A search that did not use the vector leg now says so, and `--mmr` can no longer crash on that
+  path.** `search()` used to wrap its whole vector path in a bare `except: pass`, so *any* failure
+  (an embedding upstream error, numpy missing, a broken `meta.json`) silently became a keyword-only
+  search while the envelope still reported `hybrid: true` - two very different quality levels that
+  looked identical in the output, and the reason every "faster/slower, better/worse" comparison could
+  land on a different code path without anyone noticing. The response now carries
+  `vector: {used, fallback}`, where `fallback` names the actual exception (or "embedding empty/all
+  zero"). Two further defects came out of the same read: `vectors` was assigned **only inside** the
+  `try`, so a failure before `np.load` (e.g. `require_numpy()` raising) made the fallback's
+  `mmr_select(..., vectors, ...)` throw `UnboundLocalError` under `--mmr` - now initialized to `None`
+  and guarded; and `main()` parsed the 13.5 MB `meta.json` a **second** time for `line_counts()`
+  (~125 ms/query, 1.2% of a search) - the counts are now computed from the meta `search()` already
+  has. The bare `except` also swallowed `KeyboardInterrupt`, which made cancelling a long run
+  unreliable on that path. The rerank state gained a **`transport`** field alongside `provider`,
+  because `provider: typesafe` names the *contract* that ran, not who served it - with
+  `judgeProvider=chat` the Jev contract is satisfied by DeepSeek, so the old field read as "the native
+  API worked" (it did not; the other half of the same batch fell back to the LLM path). Eight tests
+  pin the fallback behaviour, and the misleading-first-test episode is recorded in D-122: a
+  regression test that failed *after* `vectors` was assigned stayed green when the initialization was
+  removed, and a mutation check is what exposed it.
+
+
 - **A third retrieval leg answers a question the other two cannot: "which account wrote this exact
   phrase, and when?"** `search --phrase` locates a string **verbatim** using SQLite's bundled
   **FTS5 with the `trigram` tokenizer** (no new dependency), returning hits with the matched run
