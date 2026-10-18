@@ -342,7 +342,9 @@ program
         // 只读、纯本地、不调模型。**故意没有 mcp 那一栏**（D-062）：它给的是关于第三方的推断
         // ——谁在被冷落、你会失去谁 —— 所以不进助手、不进 MCP、不喂模型。
         bonds: { cli: 'bonds --json', mcp: null, leavesTheMachine: false },
-        diagnostics: { cli: 'check --json' },
+        // `check --report` 是同一份事实的**给人版**（已脱敏、可直接贴给 AI 或 issue），
+        // 所以它跟 `--json` 并列在这里：外部程序按这条能力去找"怎么拿诊断"，不该只知道 JSON 那条。
+        diagnostics: { cli: 'check --json', report: 'check --report', leavesTheMachine: false },
         todos: { cli: 'todos list --json' },
         // 2026-09-29 三个界面对齐时新开的读取能力（D-058）。逐个写清它会不会出境，
         // 因为其中两个会——`fetch_article` 白名单 + 逐跳复检，`search_public` 没有任何守卫。
