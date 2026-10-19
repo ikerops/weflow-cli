@@ -1056,21 +1056,36 @@ weflow-cli daily --dry-run --json     # 看它读到多少篇、准备处理哪�
 ```
 
 正常会打印当天扫到的文章数与一个 `{"success":true,"dryRun":true,...}`。读到几百篇就说明
-读取没问题，缺的只是一个触发。交给计划任务：
+读取没问题，缺的只是一个触发。交给计划任务 —— **用仓库里的安装脚本注册，别手抄命令**：
 
 ```powershell
-$action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
-  -Argument '-NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\daily_task.ps1'
-$trigger = New-ScheduledTaskTrigger -Daily -At 08:20
-Register-ScheduledTask -TaskName 'WeFlow Daily' -Action $action -Trigger $trigger `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew)
+# 右键 PowerShell → 以管理员身份运行，然后：
+powershell -NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\install_tasks.ps1
 ```
 
-动作只有一句"跑那个脚本"，具体的事在仓库里的 `scripts/daily_task.ps1`（纯 ASCII、路径全部相对自身）。
-它做三件事，每件都有理由：
+它装两个任务（重复运行只会覆盖成同样的定义）：
 
-1. **跑昨天**：`pipeline.py --yesterday --prefetch-bodies`（见上面两条）。
-2. **把输出落盘**：`logs/daily-<日期>.log` 与 `daily-<日期>.err.log`（`logs/` 已 gitignore）。
+| 任务 | 时间 | 跑什么 | 为什么是这个点 |
+| --- | --- | --- | --- |
+| `WeFlow Daily` | **00:05** + 每次登录 | **昨天**（刚结束的完整一天） | 公众号发到 24:00 才停，这是唯一能拿到完整一天的时点；00:05 让"昨天"与日期目录天然对齐 |
+| `WeFlow Daily Noon` | **13:00** | **今天已到达的部分**（半天） | 想当天先看一眼重点；不完整是有意的，别拿它当"今天的全部" |
+
+> **写入计划任务需要提升权限**：在受限 shell / 沙箱里 `Register-ScheduledTask` 会报"拒绝访问"、
+> `schtasks /create` 报 `Access is denied`，而**读取**任务列表是正常的 —— "看得见却建不了"不是错觉。
+> 所以上表那个脚本必须在**你自己的管理员终端**里跑一次。
+
+两次跑的是**同一天目录**，靠 `.run_state.json` 增量：13:00 处理过的文章，00:05 不再重抓、不重复调 AI，
+只补下午到达的那些；而 README 与 `index.html` 每次都从磁盘上的全部 md 重建，所以日终那份是全天完整版。
+
+`.articles.json` 也必须是**合并写**（2026-10-19 修）：它按 url 去重后并进旧文件。以前是覆盖写，
+午报后再跑日终会把上午那批的标题/摘要/主题从结构化数据里抹掉 —— 页面是全天、数据只有半天，
+下游（AI 报告、统计）静默少一半。
+
+动作只有一句"跑那个脚本"，具体的事在仓库里的 `scripts/daily_task.ps1`（纯 ASCII、路径全部相对自身）。
+第一个位置参数是模式（`noon` = 今天；缺省 = 昨天）。它做四件事，每件都有理由：
+
+1. **跑目标天**：日终 `pipeline.py --yesterday --prefetch-bodies`；午报 `pipeline.py --date <今天> --prefetch-bodies`。
+2. **把输出落盘**：`logs/daily-<日期>[-noon].log` 与 `daily-<日期>[-noon].err.log`（`logs/` 已 gitignore）。
    输出丢掉的计划任务只会回答"失败了"，答不了"昨天为什么短"。
    **同一天重跑不会覆盖上一次**：开跑前，已存在的当天日志会先被挪成
    `daily-<日期>.run<N>.log`（`N` 取第一个空位，`.err.log` 同样处理）——
@@ -1078,6 +1093,10 @@ Register-ScheduledTask -TaskName 'WeFlow Daily' -Action $action -Trigger $trigge
 3. **设 `PYTHONIOENCODING`/`PYTHONUTF8`**：这不是洁癖 —— 把 stdout 重定向到**文件**会改变 python 的
    stdout 编码（不再是控制台、而是本地代码页）。标题里出现该代码页放不下的字符时，`print` 会在
    **这一天已经写完之后**抛 `UnicodeEncodeError`，看着像失败而产物其实是好的。
+4. **幂等守卫**：日终任务看"昨天是否已完整"，午报看 `.noon_done`。判据不是"index.html 在不在"——
+   午报也会写 index.html，只看它会让 00:05 跳过下午、留下一份"看着完整、实际半天"的日报。
+   实际判据是 `.articles.json` 的 `generated_at`：**生成于目标日之后**（通常就是次日 00:0x），
+   或当晚 23:00 之后，才算这天做完了。
 
 > 为什么不把 python 命令直接写进任务动作：① 实测 `Register-ScheduledTask` 对带嵌套引号的
 > `-Argument` 会报 `0x80004005`，而包一层脚本就不用跟引号搏斗；② 任务动作指向 CLI 那个 npm 包时，

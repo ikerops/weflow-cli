@@ -142,6 +142,58 @@ def _tags_for_write(article, topic):
     return article.get('tags', [topic])
 
 
+def _article_key(entry):
+    """同一篇文章的合并键：url 优先（微信文章 url 唯一），没有 url 时退回标题+时间。"""
+    url = str(entry.get('url') or '').strip()
+    if url:
+        return url
+    title = str(entry.get('title') or '').strip()
+    if not title:
+        return ''
+    return 'no-url:%s|%s' % (title, entry.get('time') or '')
+
+
+def merge_articles_json(json_path, date_str, serializable, decision_model=None):
+    """把这一批**并进** `.articles.json`，返回落盘的全部条目（按时间排序）。
+
+    为什么必须合并：同一天可能跑两次（午报 13 点 + 日终 24 点）。第二次进来时
+    `.run_state.json` 已经把上午处理过的文章跳过了，所以这批只有下午新到达的那些；
+    若覆盖写，上午那批的标题/摘要/主题/relevance 就从这个文件里消失。而 README 与
+    `index.html` 是**从磁盘上的 md 重建**的 —— 于是"页面是全天、结构化数据只有半天"，
+    下游（AI 报告、daily-stats、知识库统计）静默少一半，没有任何地方会报错。
+    `.image_map.json` 早就是合并写的（`existing_map.update(...)`），这里只是把它缺的那半补上。
+    """
+    merged = {}
+    previous_model = None
+    if json_path.exists():
+        try:
+            old = json.loads(json_path.read_text(encoding='utf-8'))
+            previous_model = old.get('decisionModel')
+            for entry in old.get('articles') or []:
+                key = _article_key(entry)
+                if key:
+                    merged[key] = entry
+        except Exception:
+            # 旧文件坏了不该让今天失败：从空开始（与 `.image_map.json` 同一态度）
+            print('  [WARN] 旧的 .articles.json 读不了，这次从空开始（旧条目不参与合并）')
+    for entry in serializable:
+        key = _article_key(entry)
+        if key:
+            merged[key] = entry
+    articles = sorted(merged.values(), key=lambda e: (e.get('time') or '', e.get('title') or ''))
+    payload = {
+        'generated_at': datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
+        'date': date_str,
+        # 本次没判断（`--no-ai`）时不要用 None 盖掉上一次记下的模型名：那会让
+        # "这天是谁判的"在重跑后凭空消失。
+        'decisionModel': decision_model if decision_model is not None else previous_model,
+        'articles': articles,
+    }
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    return articles
+
+
 def _serializable_article(article, date_str):
     """一篇文章 -> `.articles.json` 里的那条记录。
 
@@ -1273,19 +1325,14 @@ def main():
               f'已归入兜底类「{DEFAULT_TOPIC}」（不是判断结果）')
 
     # --- 写入结构化 JSON：一次提取，多次复用（供 AI 报告等下游使用） ---
+    # **合并写**：同一天跑两次（午报 + 日终）时，这一批只有新到达的文章，
+    # 覆盖写会把上一批从文件里抹掉（详解见 `merge_articles_json` 的 docstring）。
     serializable = [_serializable_article(a, date_str) for a in articles]
 
     json_path = out_dir / '.articles.json'
     try:
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump({
-                'generated_at': datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S'),
-                'date': date_str,
-                # 只增字段：老读者不认识它会忽略；但"这次是谁判的"从此有据可查。
-                'decisionModel': decision_model,
-                'articles': serializable,
-            }, f, ensure_ascii=False, indent=2)
-        print(f'  ✓ 结构化数据: {json_path} ({len(serializable)} 篇)')
+        merged_articles = merge_articles_json(json_path, date_str, serializable, decision_model)
+        print(f'  ✓ 结构化数据: {json_path} ({len(merged_articles)} 篇，本次新增 {len(serializable)} 篇)')
     except Exception as e:
         print(f'  [WARN] JSON 写入失败: {e}')
 

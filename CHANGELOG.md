@@ -19,6 +19,23 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Two scheduled passes instead of one: a noon preview and a complete end-of-day run.**
+  `scripts/daily_task.ps1 noon` produces *today so far* (13:00); the bare invocation still
+  produces *yesterday* (now 00:05 + at logon). Both write the same date directory, and the
+  second pass is incremental - `.run_state.json` makes `biz_daily` skip what the noon pass
+  already handled, while README/`index.html` are rebuilt from every markdown file on disk.
+  `scripts/install_tasks.ps1` registers both (it needs an elevated terminal: Task Scheduler
+  writes are refused in a sandboxed shell while reads still work).
+- **`.articles.json` is merged, not overwritten.** With two passes a day the second one only
+  carries the articles that arrived after noon, so overwriting dropped the morning batch's
+  titles/summaries/topics from the structured file while the page still listed the whole day -
+  downstream reports and statistics silently saw half a day. Entries are now merged by URL
+  (title+time when a push has no URL), `decisionModel` survives a `--no-ai` rerun, and a
+  corrupt old file starts from empty instead of failing the day.
+- **The scheduled guard no longer trusts `index.html` alone.** The noon pass writes one too,
+  so "index.html exists" made the 00:05 run skip the afternoon and leave a complete-looking
+  half day behind. It now reads `.articles.json`'s `generated_at`: finished means generated
+  after the target day (the usual 00:0x pass) or after 23:00 that night.
 - **`weflow-cli check --report`: a paste-ready, redacted diagnosis.** It prints the environment
   (Node / `python --version` / `sqlcipher3` & friends), the WeChat client actually loaded and whether
   its data directory matches the configured one, whether a key/passphrase is configured, and then a
