@@ -1,0 +1,6 @@
+# cmd.exe treats a lone LF as part of the command line, so a BOM-less LF `.cmd` file
+# turns into a cascade of "'mer's' is not recognized" errors instead of a script
+# (measured 2026-10-19 on scripts/repro_customer_init.cmd). Pin the batch files to CRLF
+# on checkout so a Linux/macOS clone cannot hand a broken .cmd to a user's double-click.
+*.cmd text eol=crlf
+*.bat text eol=crlf

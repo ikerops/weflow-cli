@@ -858,6 +858,26 @@ program
       // Step 3: 提取密钥
       console.log(chalk.yellow('\n步骤 3/3: 提取数据库解密密钥...'))
 
+      // **先看 Python 在不在**（Windows）：它决定"读库"这一整步能不能做。
+      // 以前不看，于是 Python 不可用时还要先等 120 秒 hook 超时，然后把用户引向
+      // "退出微信重试"——而真正的原因（商店占位程序 / 缺 sqlcipher3）一个字都没提。
+      // 2026-10-19 用一台"PATH 里没有 python"的机器实测，2 分钟换来一条误导性建议。
+      let pythonUsable = process.platform !== 'win32'
+      if (process.platform === 'win32' && !opts.testMissingKeys) {
+        try {
+          const { execFileSync } = await import('node:child_process')
+          execFileSync(getPythonCommand(), ['--version'], { windowsHide: true, stdio: 'ignore', timeout: 5000 })
+          pythonUsable = true
+        } catch {
+          pythonUsable = false
+          console.log(chalk.red('  ✗ 没有可用的 Python —— 读微信库这一步跑不起来'))
+          console.log(chalk.gray('    NT 数据库扫描与密钥派生都靠它（需要 Python 3.10+ 且能 import sqlcipher3）。'))
+          console.log(chalk.gray('    Windows 上最常见的原因是只装了应用商店的 python 占位程序：'))
+          console.log(chalk.gray('    在终端里运行 `python --version`，能打出版本号才算装对。'))
+          console.log(chalk.gray('    跑 `weflow-cli check --report` 可以看到完整判定（那段话可直接贴给 AI）。'))
+        }
+      }
+
       // 优先尝试从 WeFlow 配置读取
       console.log(chalk.gray('  尝试从 WeFlow 桌面版配置读取...'))
       let extractedKey = opts.testMissingKeys ? '' : tryReadWeFlowKey()
@@ -924,6 +944,22 @@ program
             }
             process.exit(1)
           }
+        }
+      } else if (!pythonUsable) {
+        // Python 不可用时**不去等 hook**：就算 hook 抓到了密钥，Step 4 的扫描/派生照样跑不起来，
+        // 而那 120 秒的等待只会把用户引向"退出微信重试"这种无效动作。
+        const fallback = configService.get('favPassphrase') || configService.get('decryptKey') || ''
+        if (fallback) {
+          console.log(chalk.gray('  跳过 hook 等待：已配置的密钥会原样保留，但要先修好 Python 才读得动'))
+          extractedKey = fallback
+        } else {
+          console.log(chalk.red('\n✗ 这台机器现在无法读取微信数据库（缺 Python），因此没有可用密钥'))
+          console.log(chalk.gray('\n按顺序做：'))
+          console.log(chalk.gray('  1) 装一个真正的 Python 3.10+，确认 `python --version` 能打出版本号'))
+          console.log(chalk.gray('  2) `pip install sqlcipher3`'))
+          console.log(chalk.gray('  3) 重新 `weflow-cli init`'))
+          console.log(chalk.gray('  卡住时跑 `weflow-cli check --report`，那段文字可直接贴给 AI 或贴到 issue'))
+          process.exit(1)
         }
       } else if (process.platform !== 'win32') {
         // macOS：自动提取不可用，引导手动提供密钥
