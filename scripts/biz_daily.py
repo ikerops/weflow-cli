@@ -1405,8 +1405,13 @@ def main():
                     if map_file.exists():
                         try:
                             existing_map = json.loads(map_file.read_text(encoding='utf-8'))
-                        except:
-                            pass
+                        except Exception as exc:
+                            # 读不出来的旧映射表会让**之前几天的图片**从 HTML 里消失，
+                            # 而这一篇看起来还是成功的。宁可丢这一批映射，也要说清是什么原因。
+                            print('  [WARN] 旧的 .image_map.json 读不了（%s: %s）—— 这次从空表开始，'
+                                  '旧的图片映射会丢（HTML 里那些图可能显示不出来）'
+                                  % (type(exc).__name__, exc), file=sys.stderr)
+                            existing_map = {}
                     existing_map.update(url_mapping)
                     map_file.write_text(json.dumps(existing_map, ensure_ascii=False, indent=2), encoding='utf-8')
 

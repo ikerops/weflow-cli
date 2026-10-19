@@ -6,6 +6,8 @@
 
 WeFlow CLI is a local-first command-line tool and MCP server for user-authorized WeChat data workflows: local chat queries and exports, official-account daily reading, favorites, knowledge workflows, and an optional local assistant.
 
+**Why it exists next to WeChat itself** is written down in [POSITIONING.md](POSITIONING.md): the value is not "AI over the content WeChat already shows" (4.1.15 added exactly that for files and articles) but the layer WeChat does not provide - data that can leave the client, cross-content/cross-time queries, local inference, and answers traceable to the original message.
+
 ## Current Baseline
 
 - Source package version: take it from `package.json` -> `version` rather than from this file - a hardcoded copy drifts silently, and `package-lock.json` must always match it. The npm registry may remain on an earlier version until a maintainer publishes a release.

@@ -648,6 +648,30 @@ def load_config():
         return json.load(f)
 
 
+# ---- 「不说话地失败」的最小护栏 ---------------------------------------------
+# 这个文件里有一批函数**故意不抛**（跨机器拷配置时，解不开的密文该表现为"没配"，
+# 而不是让整条命令崩）。但"不抛"不等于"不说"：`except: return ''` 会让调用方
+# 与用户都以为"本来就没有"，而真实原因是**解密失败/配置坏了**。
+# 所以这里只做一件事：同一条原因**说一次**，然后照旧返回空值。
+# 只说一次是必须的——这些函数每次请求/每次重排都会被调用，刷屏等于没警告。
+_WARNED_ONCE = set()
+
+
+def warn_once(tag, message):
+    """同一条原因只往 stderr 说一次（tag 相同即视为同一条）。"""
+    if tag in _WARNED_ONCE:
+        return
+    _WARNED_ONCE.add(tag)
+    import sys as _sys
+    print('[WARN] ' + message, file=_sys.stderr)
+    _sys.stderr.flush()
+
+
+def reset_warn_once():
+    """测试用：清空去重表。"""
+    _WARNED_ONCE.clear()
+
+
 # 配置里"不想在日报里看到的主题"的键名。值形如 `新闻,投资,学术`。
 EXCLUDED_TOPICS_KEY = 'dailyExcludeTopics'
 
@@ -876,11 +900,15 @@ def get_dashscope_key(config=None) -> str:
     if config is None:
         try:
             config = load_config()
-        except Exception:
+        except Exception as exc:
+            warn_once('load_config', '读不到配置文件 %s（%s: %s）—— 本次当作空配置，需要配置的功能会退化成默认行为'
+                      % (CONFIG_PATH, type(exc).__name__, exc))
             return ''
     try:
         return decrypt_lock(config.get('dashscopeApiKey', ''))
-    except Exception:
+    except Exception as exc:
+        warn_once('dashscopeApiKey', '配置项 dashscopeApiKey 解不开（%s: %s）—— 当作"没配"，语义检索会退成关键词'
+                  % (type(exc).__name__, exc))
         return ''
 
 
@@ -895,11 +923,15 @@ def get_typesafe_key(config=None) -> str:
     if config is None:
         try:
             config = load_config()
-        except Exception:
+        except Exception as exc:
+            warn_once('load_config', '读不到配置文件 %s（%s: %s）—— 本次当作空配置，需要配置的功能会退化成默认行为'
+                      % (CONFIG_PATH, type(exc).__name__, exc))
             return ''
     try:
         return decrypt_lock(config.get('typesafeApiKey', ''))
-    except Exception:
+    except Exception as exc:
+        warn_once('typesafeApiKey', '配置项 typesafeApiKey 解不开（%s: %s）—— 当作"没配"，决策模型退回 LLM 解析'
+                  % (type(exc).__name__, exc))
         return ''
 
 
@@ -913,11 +945,15 @@ def get_openrouter_key(config=None) -> str:
     if config is None:
         try:
             config = load_config()
-        except Exception:
+        except Exception as exc:
+            warn_once('load_config', '读不到配置文件 %s（%s: %s）—— 本次当作空配置，需要配置的功能会退化成默认行为'
+                      % (CONFIG_PATH, type(exc).__name__, exc))
             return ''
     try:
         return decrypt_lock(config.get('openrouterApiKey', ''))
-    except Exception:
+    except Exception as exc:
+        warn_once('openrouterApiKey', '配置项 openrouterApiKey 解不开（%s: %s）—— 当作"没配"，OpenRouter 那条路会停用'
+                  % (type(exc).__name__, exc))
         return ''
 
 
@@ -960,7 +996,9 @@ def get_ai_engine(config=None) -> str:
     if config is None:
         try:
             config = load_config()
-        except Exception:
+        except Exception as exc:
+            warn_once('load_config', '读不到配置文件 %s（%s: %s）—— 本次当作空配置，需要配置的功能会退化成默认行为'
+                      % (CONFIG_PATH, type(exc).__name__, exc))
             return 'deepseek'
     return str((config or {}).get('aiEngine') or 'deepseek').strip().lower()
 
@@ -974,7 +1012,9 @@ def get_openrouter_model(config=None) -> str:
     if config is None:
         try:
             config = load_config()
-        except Exception:
+        except Exception as exc:
+            warn_once('load_config', '读不到配置文件 %s（%s: %s）—— 本次当作空配置，需要配置的功能会退化成默认行为'
+                      % (CONFIG_PATH, type(exc).__name__, exc))
             return ''
     return str((config or {}).get('openrouterJudgeModel') or '').strip()
 

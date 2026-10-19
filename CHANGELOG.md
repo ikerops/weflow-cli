@@ -19,6 +19,21 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **Silent failures now say what broke, where.** Three places that used to lose data without a word:
+  a message shard that cannot be opened during `export` (it skipped the shard and still reported
+  success - you got a shorter transcript and no reason), a corrupt `.image_map.json` in the daily
+  report (images from earlier passes disappeared from the HTML), and an encrypted config value that
+  will not decrypt (`get_*_key` returned `''`, which reads as "not configured" even though it *is*
+  configured and merely broken). Each now prints one line naming the file and the exception type;
+  the config warnings are de-duplicated because those helpers run on every request. A guard test
+  (`test/silent_failure_guard_test.py`) pins the count of bare `except:` + `pass` bodies at 53 so
+  the number cannot creep back up.
+- **`docs/POSITIONING.md`**: why this project exists next to WeChat itself. Written after 4.1.15
+  added "ask AI about a file / an article" - i.e. WeChat now does the simplest half of what a
+  "WeChat + AI" tool does. It lists the five moats (data that can leave the client, cross-time
+  queries, cross-corpus joins, local inference, traceable answers), the features that will be eaten
+  (single-document summaries, in-chat keyword search), and four questions that decide whether a
+  feature belongs here.
 - **Two scheduled passes instead of one: a noon preview and a complete end-of-day run.**
   `scripts/daily_task.ps1 noon` produces *today so far* (13:00); the bare invocation still
   produces *yesterday* (now 00:05 + at logon). Both write the same date directory, and the

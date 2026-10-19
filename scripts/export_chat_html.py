@@ -245,17 +245,28 @@ def fetch_messages_from_shards(db_path, key_hex, salt_hex, talker, date='', pass
     # 原先的 `if not shards: shards = [db_path]` 是给"可能返回空"的那一份实现擦屁股的。
     shards = discover_message_shards(db_path)
     messages = []
+    failed = []
     for shard in shards:
         shard_conn = None
         try:
             shard_key, shard_salt = derive_database_key(shard, key_hex, salt_hex, passphrase)
             shard_conn, _ = connect(shard, shard_key, shard_salt)
             messages.extend(fetch_messages(shard_conn, talker, date))
-        except Exception:
+        except Exception as exc:
+            # **少读一个分片 = 导出里少一段聊天，而用户看到的是"导出成功"**。
+            # 必须留下分片名与原因：只有知道是哪个分片，才分得清"这个分片本来就空"、
+            # "密钥/权限不对"还是"文件损坏"。原先直接 continue，等于静默丢数据。
+            failed.append((os.path.basename(shard), '%s: %s' % (type(exc).__name__, exc)))
             continue
         finally:
             if shard_conn is not None:
                 shard_conn.close()
+    if failed:
+        print('[WARN] %d/%d 个消息分片读不了，导出内容会缺这几段（不是"没有消息"）：'
+              % (len(failed), len(shards)), file=sys.stderr)
+        for name, why in failed:
+            print('  - %s  (%s)' % (name, why), file=sys.stderr)
+        sys.stderr.flush()
     messages.sort(key=lambda row: (int(row[5] or 0), int(row[0] or 0)))
     return messages
 
