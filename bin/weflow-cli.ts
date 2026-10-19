@@ -971,17 +971,20 @@ program
         console.log(chalk.gray('  4. 数据目录与账号已完成配置，设置密钥后即可使用 sessions/messages 等命令'))
         process.exit(1)
       } else {
-        // 如果微信未运行，提示启动
-        if (!version) {
-          console.log(chalk.cyan('\n  ══════════════════════════════════════'))
-          console.log(chalk.cyan('  请现在启动微信 4.x 并登录！'))
-          console.log(chalk.cyan('  ══════════════════════════════════════\n'))
+        // hook 只在**登录那一瞬**触发。所以要不要等，取决于微信现在在不在跑：
+        //   · 已在运行  → 用户早就登录了，hook 永远不会再触发，等满 120 秒纯属浪费
+        //                 （2026-10-19 用一个空配置实测：每次 init 都白等 2 分钟）
+        //   · 没在运行  → 他可能正要去打开并登录，这 30 秒是有意义的，值得等
+        let keyResult: { success: boolean; key?: string; error?: string } = { success: false }
+        if (version) {
+          console.log(chalk.gray('  微信已在运行：hook 只在登录那一瞬触发，不再等待，直接尝试扫描/派生'))
+        } else {
+          console.log(chalk.cyan('\n  微信没在运行：30 秒内打开并登录会自动抓取密钥'))
+          console.log(chalk.cyan('  （不打开也没关系，30 秒后会继续尝试 NT 扫描 / passphrase 派生）\n'))
+          keyResult = await keyService.waitForKey(30000, (msg) => {
+            console.log(chalk.gray(`  ${msg}`))
+          })
         }
-        console.log(chalk.gray('  等待微信进程出现（启动后会自动 hook）...'))
-
-        const keyResult = await keyService.waitForKey(120000, (msg) => {
-          console.log(chalk.gray(`  ${msg}`))
-        })
 
         if (keyResult.success && keyResult.key) {
           extractedKey = keyResult.key
@@ -998,12 +1001,13 @@ program
             console.log(chalk.gray('  检测到已配置的密钥, 沿用它并重新验证各库...'))
             extractedKey = fallback
           } else {
-            console.log(chalk.red(`\n✗ 密钥提取失败: ${keyResult.error}`))
-            console.log(chalk.gray('\n解决方案:'))
-            console.log(chalk.gray('  1. 退出微信后重新运行 init (hook 需在微信登录瞬间触发, init 会自动等待)'))
-            console.log(chalk.gray('  2. 或用第三方工具提取全库 passphrase 后: weflow-cli fav set-key --passphrase <64位hex>, 再重新 init 自动派生'))
-            console.log(chalk.gray('  3. 或手动指定密钥: weflow-cli config set decryptKey <64位密钥>'))
-            process.exit(1)
+            // **不退出**：hook 只在"登录那一瞬"触发，而一个正常用户装完工具时微信早就登录了，
+            // 于是这条 120 秒的等待**必然**超时。以前这里 process.exit(1)，用户就被卡在
+            // 「退出微信后重新运行 init」——而下一步（Step 4 的 NT 扫描 / 从 passphrase 派生）
+            // 才是新版本真正能拿到密钥的地方，却永远不会被执行（2026-10-19 用空配置实测）。
+            // 现在改成继续往下走：拿得到就成功，拿不到由结尾统一判"未完成"。
+            console.log(chalk.yellow('\n  Hook 没抓到密钥（它只在登录那一瞬触发，已登录时不会再有）'))
+            console.log(chalk.gray('  继续尝试 NT 扫描 / passphrase 派生 —— 这是新版本主要的取密钥方式...'))
           }
         }
       }
@@ -1016,7 +1020,8 @@ program
         // 而下面紧接着就会说"密钥未就绪"，两句自相矛盾（2026-10-19 实跑看到）。
         else console.log(chalk.yellow('\n· 配置里的密钥原样保留，但**这次验证不了**（缺 Python）——它可能仍然可用'))
       } else {
-        console.log(chalk.green('\n✓ NT 密钥配置完成!'))
+        // 空密钥时不能说"配置完成"：下一句就是"密钥未就绪"，两句打架。
+        console.log(chalk.yellow('\n· 本次没有拿到密钥，继续尝试 NT 扫描 / passphrase 派生'))
       }
 
       // Step 4: 尝试扫描 NT 格式数据库 (xwechat_files)

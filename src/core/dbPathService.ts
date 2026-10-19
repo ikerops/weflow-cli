@@ -70,6 +70,11 @@ export class DbPathService {
     return [
       '$recycle.bin', 'node_modules', 'windows', 'program files',
       'program files (x86)', 'programdata', 'system volume information',
+      // 临时目录不是微信数据的合理位置，但**测试夹具**就建在这下面
+      // （`%LOCALAPPDATA%\Temp\weflow-custom-nt-*\xwechat_files`）。不排除的话，
+      // 空配置下的"自动发现"会把一个测试残留当成用户的微信目录 ——
+      // 2026-10-19 模拟新用户时实测命中，然后一路对着假数据初始化。
+      'temp', 'tmp',
     ].includes(name.toLowerCase())
   }
 
