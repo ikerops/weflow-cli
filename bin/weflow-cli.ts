@@ -972,16 +972,19 @@ program
         process.exit(1)
       } else {
         // hook 只在**登录那一瞬**触发。所以要不要等，取决于微信现在在不在跑：
-        //   · 已在运行  → 用户早就登录了，hook 永远不会再触发，等满 120 秒纯属浪费
-        //                 （2026-10-19 用一个空配置实测：每次 init 都白等 2 分钟）
-        //   · 没在运行  → 他可能正要去打开并登录，这 30 秒是有意义的，值得等
+        //   · 已在运行  → 用户早就登录了，hook 永远不会再触发，等满 2 分钟纯属浪费
+        //                 （2026-10-19 用一个空配置实测：每次 init 都白等）
+        //   · 没在运行  → 这正是 README「三分钟上手」第 2 步要求的姿势（关掉微信再 init，
+        //                 然后按提示启动并登录）。人要打开客户端、等它起来、扫码/点确认，
+        //                 30 秒根本不够，**必须留足**，否则按文档操作的人会被那句
+        //                 "hook 没抓到" 误导。所以就按文档给满 120 秒。
         let keyResult: { success: boolean; key?: string; error?: string } = { success: false }
         if (version) {
           console.log(chalk.gray('  微信已在运行：hook 只在登录那一瞬触发，不再等待，直接尝试扫描/派生'))
         } else {
-          console.log(chalk.cyan('\n  微信没在运行：30 秒内打开并登录会自动抓取密钥'))
-          console.log(chalk.cyan('  （不打开也没关系，30 秒后会继续尝试 NT 扫描 / passphrase 派生）\n'))
-          keyResult = await keyService.waitForKey(30000, (msg) => {
+          console.log(chalk.cyan('\n  请现在启动微信并登录（登录那一瞬会自动抓取密钥）'))
+          console.log(chalk.cyan('  最多等 2 分钟；不启动也没关系，之后会继续尝试 NT 扫描 / passphrase 派生\n'))
+          keyResult = await keyService.waitForKey(120000, (msg) => {
             console.log(chalk.gray(`  ${msg}`))
           })
         }
