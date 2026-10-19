@@ -118,6 +118,12 @@ npm install -g weflow-cli
 weflow-cli check
 ```
 
+> Windows 上如果这条报 **「无法加载文件 …\npm\weflow-cli.ps1，未进行数字签名」**，拦住它的是
+> PowerShell 的执行策略，不是包本身。两条路，任选：
+>
+> - 马上能用：换成 `weflow-cli.cmd check`（`.cmd` 那份包装不走 PowerShell 策略）；
+> - 一次性解决：`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`，然后重开终端。
+
 安装标准 Windows 4.x 工作流所需的 Python 依赖：
 
 ```powershell
