@@ -19,15 +19,17 @@ WeFlow CLI is a local-first command-line tool and MCP server for user-authorized
 - npm package contents: what ships is `package.json` -> `files`, and it is an allowlist of **directories and globs** - a file added just outside a listed pattern is dropped with nothing going red. `test/pack-contents.test.ts` asserts the positive side against a real `npm pack --dry-run --json`: every tracked file under `scripts/` ships except the dev-only `.ts`/`.mjs` ones (the `.mjs` is a verification tool that needs a GPU browser), every local image the two READMEs reference ships, and no `dist/` file lacks a matching source (`tsc` never prunes, so a renamed source used to keep shipping - four such files were removed on 2026-10-11). The negative side (nothing from `output/` or `models/`, no keys) is the CI `release-consistency` job. Both halves mattered on 2026-10-11: the published `1.9.0` tarball was missing `scripts/data/wechat_emoji.json` (the emoji fallback map `scripts/wechat_emoji.py` reads) and `logo.png`, so npm installs rendered a batch of face codes as literal text and the package page showed a broken logo.
 - Downstream data contract: local JSON export is the first compatibility boundary for `she-love-me` and future consumers; see `docs/DATA_CONTRACT.md`.
 - Supported focus: Windows WeChat 4.x; Linux WeChat 4.x has an NT database path; macOS requires user-provided local access credentials for initialization.
-  The version actually verified on this machine is **4.1.15.53** (2026-10-18; previously 4.1.15.13) - read from the
-  live process's `--user-lib-dir` when it is there, and otherwise from the `Weixin.dll` that process actually has
-  mapped (4.1.15.53's main process carries **no** switches at all - D-125), **not** from the version literal inside
-  `Weixin.exe` (that one is only a fallback for when the primary load path fails; two of this machine's four version
-  *directories* are install leftovers, one of which holds a single file - see `docs/CONTACT_DB_SCHEMA.md`, which also
-  records which directories are actually usable). **4.1.15.53 read paths verified on 2026-10-18** after an
-  in-place upgrade from 4.1.15.13: the existing derived keys still open the shards, and `sessions`,
-  `messages`, `contacts`, `daily-stats` (official-account DB), `fav` (favorites DB) and `sns stats`
-  (4,140 cached posts) all returned data. The customer-reported `init` failure (`NT scan failed (exit
+  The version actually verified on this machine is **4.1.15.56** (2026-10-19; before it 4.1.15.53 on 2026-10-18, and
+  4.1.15.13 before that) - read from the live process's `--user-lib-dir` when it is there, and otherwise from the
+  `Weixin.dll` that process actually has mapped (4.1.15.53+ carries **no** switches at all - D-125), **not** from the
+  version literal inside `Weixin.exe` (that one is only a fallback for when the primary load path fails; leftover
+  version *directories* are flagged, see `docs/CONTACT_DB_SCHEMA.md`, which also records which ones are usable).
+  **Every upgrade kept the derived keys working**, verified each time by reading real data: 4.1.15.53 on 2026-10-18
+  (from 4.1.15.13) and **4.1.15.56 on 2026-10-19** - after that one, `sessions`, `messages`, `contacts`,
+  `daily-stats` (official-account DB), `fav` (favorites DB) and `sns stats` (4,164 cached posts) all returned data
+  with the keys derived under the older client. 4.1.15.56 was obtained through the client's own updater (it is not on
+  the public download page or the GitHub version archives, which still served 4.1.15.53 on 2026-10-19), so a user on
+  it is not on a different product line. The customer-reported `init` failure (`NT scan failed (exit
   9009)`) is therefore **not** a client-version problem; the `9009` message itself was verified
   end-to-end against a real process that exits `9009`.
 
