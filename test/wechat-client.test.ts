@@ -19,9 +19,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
-  classifyVersionDirs, clientVersionToken, crashSummary, detectWechatClient, parseProcessRows, summarize,
+  classifyVersionDirs, clientVersionToken, crashSummary, detectWechatClient, parseProcessRows, PS_LIST, summarize,
   updateDataCaveats, userLibDir, versionDirsUnder, wechatFilesPath, xwechatRoot,
 } from '../src/services/wechatClient.js'
+
+test('PowerShell 输出必须走 base64（中文路径会被控制台代码页弄坏）', () => {
+  // PowerShell 5.1 往 stdout 写的是控制台代码页（中文 Windows 是 GBK），Node 按 UTF-8 解，
+  // 于是 `D:\微信\xwechat_files` 变成 `D:\΢��\xwechat_files`，"与配置同一份"被判成"否"，
+  // 报告就会建议用户去"对齐账号"——2026-10-19 在真机上就是这么误报的。
+  assert.match(PS_LIST, /ToBase64String/, 'PS_LIST 必须 base64 输出')
+  assert.match(PS_LIST, /Encoding\]::Unicode/, '要用 UTF-16LE，与 Node 的 utf16le 对称')
+  // 解码这一步是纯计算，直接验往返
+  const sample = 'D:\\微信\\xwechat_files'
+  const b64 = Buffer.from(sample, 'utf16le').toString('base64')
+  assert.equal(Buffer.from(b64, 'base64').toString('utf16le'), sample)
+})
 
 /** 进程画像的默认值，省得每处都写那两个可选字段。 */
 const proc = (pid: number, loadedDir: string | null, dataDir: string | null = null,

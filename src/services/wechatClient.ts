@@ -90,7 +90,7 @@ const VERSION_DIR = /^\d+(\.\d+)+$/
 // 于是"客户端自报数据目录"这一项**永远是空的**而看不出来）。版本那一支只认 `Weixin.exe`（见 `summarize`）。
 // `WeixinDll` 是**同一件事的第二观测**：Win32_Process 只有命令行，模块表要问进程本身。
 // 每条都单独 try —— 一个进程读不到模块不该让整张表为空（那会把"读不到"讲成"客户端没在跑"）。
-const PS_LIST = "$rows = Get-CimInstance Win32_Process -Filter (\"Name='Weixin.exe' or Name='WeChatAppEx.exe'\") | ForEach-Object { $dll = $null; try { $dll = (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules | Where-Object { $_.ModuleName -eq 'Weixin.dll' } | Select-Object -First 1 -ExpandProperty FileName } catch {}; [pscustomobject]@{ ProcessId = $_.ProcessId; ExecutablePath = $_.ExecutablePath; CommandLine = $_.CommandLine; WeixinDll = $dll } }; if ($rows) { $rows | ConvertTo-Json -Compress }"
+export const PS_LIST = "$rows = Get-CimInstance Win32_Process -Filter (\"Name='Weixin.exe' or Name='WeChatAppEx.exe'\") | ForEach-Object { $dll = $null; try { $dll = (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules | Where-Object { $_.ModuleName -eq 'Weixin.dll' } | Select-Object -First 1 -ExpandProperty FileName } catch {}; [pscustomobject]@{ ProcessId = $_.ProcessId; ExecutablePath = $_.ExecutablePath; CommandLine = $_.CommandLine; WeixinDll = $dll } }; if ($rows) { [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(($rows | ConvertTo-Json -Compress))) }"
 
 export function parseProcessRows(raw: string): WechatClientProcess[] {
   const text = String(raw || '').trim()
@@ -362,7 +362,17 @@ export async function reportedDataDirs(run: PowershellRunner = defaultRunner): P
 const defaultRunner: PowershellRunner = async (command) => {
   const { stdout } = await execFileAsync('powershell.exe',
     ['-NoProfile', '-NonInteractive', '-Command', command], { timeout: 15_000 })
-  return String(stdout || '')
+  const raw = String(stdout || '').trim()
+  // PowerShell 5.1 往 stdout 写的是**控制台代码页**（中文 Windows 上是 GBK 936），
+  // 而 Node 按 UTF-8 解码 —— 于是 `D:\微信\xwechat_files` 变成 `D:\΢��\xwechat_files`，
+  // 接着把"与配置是同一份"判成"否"，报告就会给出错误的迁移建议（2026-10-19 实测）。
+  // 让 PowerShell 先 base64（UTF-16LE）再输出，就与代码页彻底无关了。
+  if (!raw || raw.startsWith('{') || raw.startsWith('[')) return raw   // 兼容注入的 runner / 老输出
+  try {
+    return Buffer.from(raw, 'base64').toString('utf16le').trim()
+  } catch {
+    return raw
+  }
 }
 
 /**

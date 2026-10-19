@@ -17,6 +17,17 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.13.1
+
+- **Fix: a data directory containing non-ASCII characters was decoded wrong, so `check --report`
+  reported the wrong verdict.** Windows PowerShell writes to stdout in the console code page
+  (GBK on a Chinese system) while Node reads UTF-8, so `D:\微信\xwechat_files` arrived as
+  `D:\΢��\xwechat_files`. Nothing crashed - the comparison against the configured path simply
+  came out unequal, and the report told the user "you may be reading another account's database"
+  when they were reading exactly the right one. The PowerShell side now emits base64 (UTF-16LE)
+  and the Node side decodes it, so the code page cannot touch it. Verified by round-tripping a
+  Chinese path through the real `powershell.exe` call.
+
 ## 1.13.0
 
 - **`sessions` shows readable previews instead of raw message bytes.** The preview column used to
