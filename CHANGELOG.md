@@ -19,6 +19,18 @@ All notable user-facing changes are recorded here. This project follows [Semanti
 
 ## Unreleased
 
+- **`sessions` shows readable previews instead of raw message bytes.** The preview column used to
+  print whatever sat in `source` / `message_content`, so card and mini-program messages came out as
+  `(/ }25984…` fragments and text messages with a corrupt column showed binary. It now labels by
+  message type (`[图片]` / `[语音]` / `[视频]` / `[表情]` / `[链接/文件]` / `[系统消息]`, honouring
+  4.x's packed `local_type` where the subtype lives in the high bits), picks whichever column decodes
+  as real text, and strips a leading run of ASCII symbols that group messages carry. Chinese
+  punctuation and emoji openings are left alone.
+- **`check` says when the configured database path is a junction.** WeChat moved to another drive
+  leaves `C:\Users\<user>\xwechat_files` pointing at the real location; printing only the link made
+  it look like the config pointed somewhere wrong. It now adds `↳ 软链指向 <real path>`.
+- **README: `init` needs `--path` when the data directory is not in a default location**, because
+  "close WeChat first" removes the only remaining way auto-discovery could find it.
 - **Silent failures now say what broke, where.** Three places that used to lose data without a word:
   a message shard that cannot be opened during `export` (it skipped the shard and still reported
   success - you got a shorter transcript and no reason), a corrupt `.image_map.json` in the daily

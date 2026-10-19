@@ -375,13 +375,17 @@ export class SqlcipherCore {
     if (!this.db) return { success: false, error: '数据库未打开' }
 
     try {
+      // 预览必须取**类型**，不能只取正文：非文本消息的 `StrContent` 是 XML/base64 碎片，
+      // 直接打出来就是一屏 `(/`$` 这种看不懂的字符（2026-10-19 用户在 `sessions` 里看到）。
+      // `Type` 与 `StrContent` 用 char(1) 拼在一次查询里取回 —— 分两条子查询等于把
+      // 每个会话的排序做两遍（400 个会话就是两倍的排序）。
       const stmt = this.db.prepare(`
         SELECT
           m.StrTalker as username,
           MAX(m.CreateTime) as lastTimestamp,
-          (SELECT m2.StrContent FROM MSG m2
+          (SELECT m2.Type || char(1) || COALESCE(m2.StrContent, '') FROM MSG m2
            WHERE m2.StrTalker = m.StrTalker
-           ORDER BY m2.CreateTime DESC LIMIT 1) as summary
+           ORDER BY m2.CreateTime DESC LIMIT 1) as lastMsg
         FROM MSG m
         WHERE m.StrTalker != ''
         GROUP BY m.StrTalker
@@ -390,15 +394,21 @@ export class SqlcipherCore {
       `)
       const rows = stmt.all() as any[]
 
-      const sessions: ChatSession[] = rows.map((row: any) => ({
-        username: row.username || '',
-        type: (row.username || '').includes('@chatroom') ? 1 : 0,
-        unreadCount: 0,
-        summary: row.summary || '',
-        sortTimestamp: row.lastTimestamp || 0,
-        lastTimestamp: row.lastTimestamp || 0,
-        displayName: row.username || '',
-      }))
+      const sessions: ChatSession[] = rows.map((row: any) => {
+        const raw = String(row.lastMsg || '')
+        const sep = raw.indexOf('\u0001')
+        const summaryType = sep >= 0 ? Number(raw.slice(0, sep)) || 0 : 0
+        const summaryBody = sep >= 0 ? raw.slice(sep + 1) : raw
+        return {
+          username: row.username || '',
+          type: (row.username || '').includes('@chatroom') ? 1 : 0,
+          unreadCount: 0,
+          summary: this.previewOf(summaryType, summaryBody),
+          sortTimestamp: row.lastTimestamp || 0,
+          lastTimestamp: row.lastTimestamp || 0,
+          displayName: row.username || '',
+        }
+      })
 
       return { success: true, sessions }
     } catch (e) {
@@ -450,6 +460,32 @@ export class SqlcipherCore {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       return { success: false, error: `获取消息失败: ${msg}` }
+    }
+  }
+
+  /**
+   * 会话列表里那一列的**显示形态**（不是完整解析）。
+   *
+   * 只做两件事：按 `Type` 给标签、把控制字符清掉。不做缩略图、不解 appmsg 的完整 XML ——
+   * 这里是列表预览，400 行里每行都解析一次会把 `sessions` 拖成几秒。
+   * 口径与 `processMessage` 保持一致（`[图片]` / `[语音]` / `[链接]`…），免得出两套说法。
+   */
+  private previewOf(localType: number, raw: string): string {
+    switch (localType) {
+      case 1: // 文本：清掉控制字符后原样显示
+        return raw.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim()
+      case 3: return '[图片]'
+      case 34: return '[语音]'
+      case 43: return '[视频]'
+      case 47: return '[表情]'
+      case 49: return '[链接/文件]'
+      case 48: return '[位置]'
+      case 42: return '[名片]'
+      case 10000: return '[系统消息]'
+      case 10002: return '[系统消息]'
+      default:
+        // 未知类型：给个可读的兜底，**绝不把原始二进制/XML 打到终端里**
+        return localType ? `[消息类型 ${localType}]` : '[非文本]'
     }
   }
 

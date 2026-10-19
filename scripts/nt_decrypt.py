@@ -795,6 +795,51 @@ def get_favorites(db_path, key_hex, limit=100, offset=0, keyword=None, fav_type=
         return {"error": str(e).split('\n')[0][:200]}
 
 
+#: 非文本消息在**列表预览**里的显示形态。与 `sqlcipherCore.processMessage` 的口径一致。
+#: 列表预览只需要回答"这是什么"，不需要内容 —— 而 49 类的 `source` 往往是被压缩的
+#: appmsg，硬去剥 XML 标签只会得到 `(/`$` 这种碎片（2026-10-19 用户在 `sessions` 里看到）。
+_PREVIEW_LABELS = {
+    3: '[图片]', 34: '[语音]', 43: '[视频]', 47: '[表情]', 48: '[位置]',
+    42: '[名片]', 49: '[链接/文件]', 10000: '[系统消息]', 10002: '[系统消息]',
+}
+
+
+def _clean_preview(text, limit=50):
+    """预览用：清掉控制字符、压掉换行/连续空白、去掉行首的二进制残渣、截断。
+
+    行首清洗只针对 **ASCII 标点**：群消息的 `source` 有时前面带三四个字节的碎片
+    （实测一条广告消息长这样：`(/ }25984981651785937@openim:🔰周黑鸭…`），
+    不处理的话列表第一列就是这堆符号。中文标点与 emoji 开头**不动**——
+    `？好的`、`😂收到` 都是正常消息。
+    """
+    if not isinstance(text, str):
+        return ''
+    cleaned = ''.join(ch for ch in text if ch >= ' ' or ch == '\t')
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    # 空格也要算在"垃圾前缀"里：实测前缀是 `(/ }`，中间那个空格会把
+    # 「连续 ASCII 标点」这条匹配打断，于是整段清理失效（2026-10-19 实测）。
+    cleaned = re.sub(r'^[\x20-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]{1,8}(?=[A-Za-z0-9\u4e00-\u9fff])', '', cleaned)
+    return cleaned[:limit]
+
+
+def _looks_broken(text):
+    """这段"文本"其实是被当成文本的二进制吗？
+
+    判据只看两样：UTF-8 解码时留下的替换字符、以及不可打印字符的占比。
+    实测样本：一条 openim 消息的 `message_content` 解出来是
+    `(/ }25984981651785937@openim:` 加一个替换字符 —— 直接显示就是垃圾。
+    """
+    if not text:
+        return False
+    # 出现**任何**替换字符就说明原始字节不是合法 UTF-8 —— 正常中文/emoji 不会产生它。
+    # 阈值不能是"两个以上"：实测那条 openim 消息只在结尾丢了一个字节，
+    # 前面全是可打印的压缩碎片，比例判据根本拦不住。
+    if '\ufffd' in text:
+        return True
+    printable = sum(1 for ch in text if ch.isprintable())
+    return printable / max(1, len(text)) < 0.9
+
+
 def _summarise(row):
     """(last_time, summary) from the newest message row of a conversation."""
     last_time = row[0] or 0
@@ -803,22 +848,42 @@ def _summarise(row):
     content_text = row[2]
 
     if msg_type == 1:
-        # Text message: use message_content
-        if isinstance(content_text, str) and content_text:
-            return last_time, content_text[:50]
-        if isinstance(content_text, bytes):
-            return last_time, content_text.decode('utf-8', errors='ignore')[:50]
-        return last_time, ""
+        # 文本：`message_content` 与 `source` 里**哪个更像人话就用哪个**。
+        # 只认 `message_content` 会踩到"这一列其实是二进制"的消息（见 `_looks_broken`）。
+        candidates = []
+        for value in (content_text, source_text):
+            if isinstance(value, bytes):
+                value = value.decode('utf-8', errors='ignore')
+            if isinstance(value, str) and value.strip():
+                candidates.append(value)
+        if not candidates:
+            return last_time, ""
+        best = min(candidates, key=lambda s: s.count('\ufffd') / max(1, len(s)))
+        if _looks_broken(best):
+            return last_time, '[内容无法显示]'
+        return last_time, _clean_preview(best)
 
-    if isinstance(source_text, str) and source_text:
-        # Non-text: try to extract from source, stripping XML tags
+    # 非文本：先按类型给标签。**不再从 `source` 里剥标签抠文字** —— 那条路只有在
+    # XML 是明文 appmsg 时才成立，而 4.x 上它经常是压缩的，抠出来就是二进制碎片。
+    #
+    # `local_type` 在 4.x 里是**打包值**：高位放 subtype，低 32 位才是基础类型
+    # （实测 `25769803825` = 0x6_00000031，低 8 位 0x31 = 49 = 链接/文件）。
+    # 不 mask 的话，一张「链接卡片」会被报成 `[消息类型 25769803825]`。
+    raw_type = int(msg_type) if msg_type else 0
+    base_type = raw_type & 0xFFFFFFFF
+    label = _PREVIEW_LABELS.get(base_type)
+    if label:
+        return last_time, label
+
+    if isinstance(source_text, str) and source_text.strip():
         clean = re.sub(r'<[^>]+>', '', source_text)
-        lines = clean.split('\n')
-        if len(lines) > 1 and lines[1].strip():
-            return last_time, lines[1].strip()[:50]
         if clean.strip():
-            return last_time, clean.strip()[:50]
-    return last_time, ""
+            # 兜底也要过一遍"这其实是二进制吗"：某些消息两列都是压缩数据，
+            # 剥掉尖括号后看着像文字，实际是 `(/ }25984...` 这种碎片。
+            if _looks_broken(clean):
+                return last_time, '[内容无法显示]'
+            return last_time, _clean_preview(clean)
+    return last_time, ('[消息类型 %d]' % base_type) if base_type else ''
 
 
 def get_sessions(conns):

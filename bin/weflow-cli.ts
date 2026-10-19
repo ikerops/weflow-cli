@@ -7806,6 +7806,16 @@ program
         const stat = (await import('fs')).statSync(path)
         const mb = (stat.size / 1024 / 1024).toFixed(0)
         console.log(chalk.white(`  ${label}: ${path} (${mb}MB)`))
+        // 微信"存储位置"设到别的盘时，用户目录下那个是**junction**：显示的是 C 盘路径，
+        // 数据其实在 D 盘。不点出来的话，用户会以为配置指错了地方（2026-10-19 实测：
+        // `C:\Users\…\xwechat_files` → `D:\微信\xwechat_files`）。
+        try {
+          const { realpathSync } = await import('fs')
+          const real = realpathSync(path)
+          if (real.toLowerCase() !== path.toLowerCase()) {
+            console.log(chalk.gray(`    ↳ 软链指向 ${real}`))
+          }
+        } catch { /* 解析不了就不说，别拿它当错误 */ }
       } else {
         const hint = keyRequired ? ' (可选, init 或 sns/fav 命令配置)' : ''
         console.log(chalk.gray(`  ${label}: 未配置${hint}`))
