@@ -1058,8 +1058,13 @@ weflow-cli daily --dry-run --json     # 看它读到多少篇、准备处理哪�
 正常会打印当天扫到的文章数与一个 `{"success":true,"dryRun":true,...}`。读到几百篇就说明
 读取没问题，缺的只是一个触发。交给计划任务 —— **用仓库里的安装脚本注册，别手抄命令**：
 
+```text
+双击 scripts\install_tasks.cmd          ← 最省事：它自己申请管理员权限，装完窗口留着给你看结果
+```
+
+或者在你自己的管理员 PowerShell 里：
+
 ```powershell
-# 右键 PowerShell → 以管理员身份运行，然后：
 powershell -NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\install_tasks.ps1
 ```
 
@@ -1070,9 +1075,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <仓库>\scripts\install_tas
 | `WeFlow Daily` | **00:05** + 每次登录 | **昨天**（刚结束的完整一天） | 公众号发到 24:00 才停，这是唯一能拿到完整一天的时点；00:05 让"昨天"与日期目录天然对齐 |
 | `WeFlow Daily Noon` | **13:00** | **今天已到达的部分**（半天） | 想当天先看一眼重点；不完整是有意的，别拿它当"今天的全部" |
 
-> **写入计划任务需要提升权限**：在受限 shell / 沙箱里 `Register-ScheduledTask` 会报"拒绝访问"、
-> `schtasks /create` 报 `Access is denied`，而**读取**任务列表是正常的 —— "看得见却建不了"不是错觉。
-> 所以上表那个脚本必须在**你自己的管理员终端**里跑一次。
+> **为什么这步得由你点一下**：计划任务的**写入**在受限 shell / agent 沙箱里是整族被拒的。
+> 2026-10-19 用管理员 token 实测三条路全红、而读取一直正常：
+>
+> | 路径 | 结果 |
+> | --- | --- |
+> | `schtasks /create` | `Access is denied` |
+> | COM `Schedule.Service` → `RegisterTaskDefinition` | `0x80070005` |
+> | `New-ScheduledTaskAction` / `-SettingsSet`（连**内存里构造对象**都） | `拒绝访问` |
+>
+> 所以"看得见却建不了"不是错觉，也**不是靠'以管理员运行'能解决的**——换一个不被沙箱监管的
+> 终端（双击上面那个 `.cmd` 就会用你自己的桌面会话申请提权）才行。
 
 两次跑的是**同一天目录**，靠 `.run_state.json` 增量：13:00 处理过的文章，00:05 不再重抓、不重复调 AI，
 只补下午到达的那些；而 README 与 `index.html` 每次都从磁盘上的全部 md 重建，所以日终那份是全天完整版。

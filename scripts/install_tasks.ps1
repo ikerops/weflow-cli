@@ -1,12 +1,19 @@
 # Register / update the two scheduled tasks for the official-account daily report.
 # Idempotent: running it again overwrites the definitions with the same values.
 #
-# Why an elevated terminal: writing to Task Scheduler needs elevation. In a restricted
-# shell / sandbox you get "Access is denied" (Register-ScheduledTask says 拒绝访问,
-# schtasks /create says Access is denied) while *reading* the task list still works -
-# so "I can see them but cannot create them" is not an illusion.
+# Why this cannot always be done for you: writing to Task Scheduler is refused in a
+# restricted shell / agent sandbox, and refused as a *class* - measured on 2026-10-19 with
+# an elevated Administrator token, all three write paths said "Access is denied" while
+# reads kept working:
+#     schtasks /create ...                      -> Access is denied
+#     (New-Object -ComObject Schedule.Service)   -> RegisterTaskDefinition 0x80070005
+#     New-ScheduledTaskAction / -SettingsSet ... -> 拒绝访问  (even the in-memory builders)
+# So "I can see the tasks but cannot create them" is not an illusion, and it is not fixed
+# by "run as administrator". The one reliable route is a terminal the sandbox does not
+# supervise: double-click scripts\install_tasks.cmd (it asks for elevation itself), or run
+# this file from your own PowerShell window.
 #
-# Usage (right-click PowerShell -> Run as administrator):
+# Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\install_tasks.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\scripts\install_tasks.ps1 -Uninstall
 #
