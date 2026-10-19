@@ -1609,6 +1609,7 @@ weflow-cli check --report
 
 | 现象 | 处理 |
 | --- | --- |
+| `Error: Cannot find module …\npm\node_modules\weflow-cli\cli.cjs` | 全局安装**残缺**（目录里只剩零散依赖，没有 `package.json`、没有 `cli.cjs`）。`npm ls -g weflow-cli` 显示版本号为空就是它。删掉 `%APPDATA%\npm\node_modules\weflow-cli`，再 `npm i -g weflow-cli@latest`。2026-10-19 在本机遇到过一次，重装即恢复 |
 | 找不到数据目录 | 先 `init --path`，再 `--search-drives`，最后 `--full-scan`。 |
 | `Python not found` | 安装 Python 并确保当前 PowerShell 能执行 `python --version`。 |
 | 缺少 `sqlcipher3` 等依赖 | 用同一个 Python 执行 `python -m pip install -r requirements.txt`，再 `weflow-cli check`。 |
