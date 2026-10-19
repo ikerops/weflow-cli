@@ -1011,7 +1011,10 @@ program
       if (extractedKey) {
         configService.set('decryptKey', extractedKey)
         if (keyCaptured) console.log(chalk.green('\n✓ 密钥获取成功!'))
-        else console.log(chalk.green('\n✓ 已沿用配置中的密钥 (本次未重新捕获)'))
+        else if (pythonUsable) console.log(chalk.green('\n✓ 已沿用配置中的密钥 (本次未重新捕获)'))
+        // 缺 Python 时**不能说"已沿用"**：那句话在这里会被读成"密钥没问题"，
+        // 而下面紧接着就会说"密钥未就绪"，两句自相矛盾（2026-10-19 实跑看到）。
+        else console.log(chalk.yellow('\n· 配置里的密钥原样保留，但**这次验证不了**（缺 Python）——它可能仍然可用'))
       } else {
         console.log(chalk.green('\n✓ NT 密钥配置完成!'))
       }
@@ -1136,13 +1139,16 @@ program
         console.log(chalk.cyan('  weflow-cli check --report'))
         console.log(chalk.gray('  它会给出结论（Python / sqlcipher3 / 密钥 / 数据目录），那段文字可以直接复制给 AI 或贴到 issue。'))
       }
-    }
 
-    console.log(chalk.gray('\n现在可以使用以下命令:'))
-    console.log(chalk.gray('  weflow-cli sessions        查看会话列表'))
-    console.log(chalk.gray('  weflow-cli messages <talker> 查看消息'))
-    console.log(chalk.gray('  weflow-cli contacts        查看联系人'))
-    console.log(chalk.gray('  weflow-cli export <talker> <format> 导出聊天记录'))
+      // 未就绪时说"现在可以使用"是骗人的：那几条命令都会返回空。
+      console.log(chalk.gray(ntReady
+        ? '\n现在可以使用以下命令:'
+        : '\n修好上面那几步之后，这些命令才会返回数据:'))
+      console.log(chalk.gray('  weflow-cli sessions        查看会话列表'))
+      console.log(chalk.gray('  weflow-cli messages <talker> 查看消息'))
+      console.log(chalk.gray('  weflow-cli contacts        查看联系人'))
+      console.log(chalk.gray('  weflow-cli export <talker> <format> 导出聊天记录'))
+    }
   })
 
 // ==================== config ====================

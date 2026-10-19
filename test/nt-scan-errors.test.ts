@@ -38,10 +38,14 @@ test('9009 要说清是 Python 缺失/不可用，而不是把退出码原样丢
     '旧的裸报错不能回来 —— 它不包含任何下一步')
 })
 
-test('ENOENT（没装 Python）仍是那条"装一个并加进 PATH"的提示', async () => {
+test('ENOENT（没装 Python）与 9009 用同一句话：说清是 Python 缺了，并给出验证动作', async () => {
   const r = await NtCore.scan(undefined, throwing('ENOENT'))
   assert.equal(r.success, false)
-  assert.match(r.error || '', /Python not found/)
+  // 以前这里是英文 `Python not found. Install Python and add to PATH.`，于是同一个 init 里
+  // 上面已经用中文解释过"商店占位程序"，下面又冒出一句英文（2026-10-19 实跑看到）。
+  assert.match(r.error || '', /没有可用的 Python/)
+  assert.match(r.error || '', /python --version/, '要给出可以马上验证的动作')
+  assert.doesNotMatch(r.error || '', /Python not found/, '英文那条不许回来')
 })
 
 test('正常输出：从最后一行 JSON 取值，并把 databases/keys/matched 都带出来', async () => {

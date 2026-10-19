@@ -245,7 +245,15 @@ export class NtCore {
       return { success: false, error: 'Scan produced no valid output' }
     } catch (e: any) {
       if (e?.code === 'ENOENT') {
-        return { success: false, error: 'Python not found. Install Python and add to PATH.' }
+        // 与 9009 那条**同一件事、同一句话**：一条是"命令名解析不到"，一条是"解析到了但跑不起来"，
+        // 对用户来说都是"这台机器没有可用的 Python"。以前这里留的是英文
+        // `Python not found. Install Python and add to PATH.`，于是同一个 init 里
+        // 上面刚用中文解释完"商店占位程序"，下面又冒出一句英文（2026-10-19 实测）。
+        return {
+          success: false,
+          error: '没有可用的 Python：NT 扫描需要 Python 3.10+ 且能 `import sqlcipher3`。'
+            + '在终端里运行 `python --version`，能打出版本号才算装对',
+        }
       }
       if (e?.code === 9009) {
         // Windows 的 9009 是"找不到命令"。最常见的原因是 PATH 上只有**微软商店的 python
