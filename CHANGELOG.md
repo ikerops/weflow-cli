@@ -17,7 +17,7 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.13.0
 
 - **`sessions` shows readable previews instead of raw message bytes.** The preview column used to
   print whatever sat in `source` / `message_content`, so card and mini-program messages came out as
