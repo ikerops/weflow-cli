@@ -17,6 +17,21 @@ purpose** - a hand-written "latest is X" is exactly the claim that goes stale he
 
 All notable user-facing changes are recorded here. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.14.0
+
+- **Set up the daily report can now be mailed, filtered to the topics you actually read.**
+  `daily --email` renders the day's articles into one email with three sections - AI / 文学 / 学术 -
+  dropping 新闻 / 政治 / 投资, and each section opens with an AI-written digest (one call per
+  section) over that section's titles and key points. Every article keeps its one-line analysis
+  (those are the per-article summaries `biz_daily` already produced, so no extra calls) plus its
+  source, time and a link to the original. The HTML reader stays on the desktop on purpose: its
+  images are local relative paths and would break in a mailbox. Recipient comes from
+  `--mail-to`, then config `dailyMailTo`, then the SMTP account itself.
+- **The scheduled run mails the same report after it finishes.** `scripts/daily_task.ps1` calls
+  `daily_mail.py` only when the report was produced, and logs the mail step separately - a mail
+  failure is recorded but does not turn a successful day into a failed one, nor stop the noon
+  marker from being written.
+
 ## 1.13.1
 
 - **Fix: a data directory containing non-ASCII characters was decoded wrong, so `check --report`

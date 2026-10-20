@@ -127,6 +127,22 @@ if ($proc.ExitCode -eq 0 -and $rest.Count -eq 0) {
             Set-Content -Path (Join-Path $dayDir '.noon_done') -Value (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') -Encoding UTF8
         }
     }
+
+    # Mail is a separate step on purpose: the day's product is already on disk, so a mail
+    # failure must not turn a successful run into a failed one (and must not stop the
+    # noon marker from being written). It has its own log pair.
+    $mailScript = Join-Path $PSScriptRoot 'daily_mail.py'
+    $mailOut = Join-Path $logDir ('daily-mail-{0}{1}.log' -f $stamp, $suffix)
+    $mailErr = Join-Path $logDir ('daily-mail-{0}{1}.err.log' -f $stamp, $suffix)
+    if (Test-Path $mailScript) {
+        $mailProc = Start-Process -FilePath $python -ArgumentList @($mailScript, '--date', $targetDay) `
+            -NoNewWindow -Wait -PassThru -RedirectStandardOutput $mailOut -RedirectStandardError $mailErr
+        if ($mailProc.ExitCode -ne 0) {
+            Add-Content -Path (Join-Path $logDir 'daily-task.log') -Value `
+                ('===== {0}  [{1}] {2} mail failed (exit {3}), see {4} =====' -f `
+                    (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $mode, $targetDay, $mailProc.ExitCode, $mailErr) -Encoding UTF8
+        }
+    }
 }
 
 exit $proc.ExitCode

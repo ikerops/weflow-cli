@@ -1175,7 +1175,7 @@ const configurableKeys = [
   'assistantGroupRequireMention', 'assistantFastRoute', 'assistantPanelUser', 'quickReplyContacts',
   'skillDirs', 'skillDisabled',
   'dailySources', 'dailySourceCategories',
-  'dailyExcludeTopics', 'dailyAiEnabled',
+  'dailyExcludeTopics', 'dailyAiEnabled', 'dailyMailTo',
   'wechatMediaDownload',
   'emoticonSeed',
 ] as const
@@ -6359,12 +6359,15 @@ program
   .option('--no-summary', '只判断不生成：不调 LLM 写摘要/标签/简报（主题与相关度仍由 Jev 判断），无需 DeepSeek key')
   .option('--prefetch-bodies [n]', '抓取之前先并发把当天正文抓进缓存（n=并发数，默认 8）：抓取阶段于是全部命中缓存、不再逐篇 sleep 8-12 秒（450 篇约 75 分钟 → 秒级）。对上游的请求次数不变，只是压进更短的时间窗')
   .option('--json', '输出机器可读的最终结果；运行日志写入 stderr')
+  .option('--email', '生成后把日报按主题（AI / 文学 / 学术）发到邮箱（每个主题附一段 AI 综述，逐篇给要点）')
+  .option('--mail-to <address>', '邮件收件人；缺省用配置 dailyMailTo，再缺省发给自己')
   .action(async (opts) => {
     const { spawn } = await import('child_process')
     const { existsSync, statSync } = await import('fs')
     const pkgRoot = resolvePackageRoot()
     const pipeline = join(pkgRoot, 'scripts', 'pipeline.py')
     const bizDaily = join(pkgRoot, 'scripts', 'biz_daily.py')
+    const dailyMail = join(pkgRoot, 'scripts', 'daily_mail.py')
 
     const now = new Date()
     const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
@@ -6489,6 +6492,24 @@ program
     const code = await runPipeline(date)
     if (code === 0) {
       const complete = isComplete(date)
+      // 邮件只依赖 `.articles.json`（逐篇摘要已经由 biz_daily 写好），所以放在生成之后、
+      // 与"是否完整"无关：不完整时也先把已有的发出去，用户不至于什么都收不到。
+      let mail: { ok: boolean; code: number } | null = null
+      if (opts.email) {
+        const mailArgs = [dailyMail, '--date', date]
+        if (opts.mailTo) mailArgs.push('--to', String(opts.mailTo))
+        dailyLog(chalk.cyan('\n📧 正在按主题整理并发邮件...'))
+        mail = await new Promise((resolve) => {
+          const child = spawn(getPythonCommand(), mailArgs, {
+            windowsHide: true,
+            stdio: 'inherit',
+            env: pythonProcessEnv(apiKey),
+          })
+          child.on('error', () => resolve({ ok: false, code: 1 }))
+          child.on('exit', (c) => resolve({ ok: (c || 0) === 0, code: c || 0 }))
+        })
+        if (mail && !mail.ok) dailyLog(chalk.yellow('  ! 邮件没发出去（日报本身已生成，见上面的报错）'))
+      }
       if (opts.json) {
         console.log(JSON.stringify({
           success: complete,
@@ -6497,11 +6518,13 @@ program
           aiEnabled: !noAi,
           output: `output/biz-daily/${date}`,
           artifacts: artifactStatus(date),
+          mail,
         }, null, 2))
         if (!complete) process.exit(1)
         return
       }
       console.log(chalk.green(`\n✓ 日报已生成: output/biz-daily/${date}/`))
+      if (mail) console.log(chalk.green(`✓ 邮件已发送${opts.mailTo ? ` → ${opts.mailTo}` : ''}`))
       console.log(chalk.gray(`  HTML 阅读器: weflow-cli daily-server --date ${date}`))
     } else {
       if (opts.json) console.log(JSON.stringify({ success: false, code: 'DAILY_PIPELINE_FAILED', date, aiEnabled: !noAi }))
