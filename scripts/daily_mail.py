@@ -152,18 +152,22 @@ def render(date: str, groups, digests, bodies=None) -> tuple[str, str, int]:
             text_lines.append(digest)
         text_lines.append('')
 
+        # 主题分区：一条通栏色条 + 主题名，比一个小圆角标签更能"切开"版面。
         blocks.append(
-            '<tr><td style="padding:26px 28px 0;">'
-            f'<span style="display:inline-block;background:{tint};color:{accent};'
-            'font-size:13px;font-weight:600;padding:5px 12px;border-radius:999px;">'
-            f'{html.escape(topic)} · {len(items)} 篇</span></td></tr>'
+            '<tr><td style="padding:30px 28px 0;">'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+            f'<td width="4" style="background:{accent};border-radius:2px;"></td>'
+            '<td style="padding-left:10px;">'
+            f'<span style="font-size:17px;font-weight:700;color:#111827;">{html.escape(topic)}</span>'
+            f'<span style="font-size:12px;color:#9aa3af;margin-left:8px;">{len(items)} 篇</span>'
+            '</td></tr></table></td></tr>'
         )
         if digest:
             blocks.append(
                 '<tr><td style="padding:12px 28px 0;">'
                 '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
                 f'style="background:#f8fafc;border-left:3px solid {accent};border-radius:8px;">'
-                '<tr><td style="padding:14px 16px;font-size:14px;line-height:1.75;color:#3f4652;">'
+                '<tr><td style="padding:14px 16px;font-size:14px;line-height:1.8;color:#3f4652;">'
                 f'{html.escape(digest)}</td></tr></table></td></tr>'
             )
 
@@ -172,38 +176,74 @@ def render(date: str, groups, digests, bodies=None) -> tuple[str, str, int]:
             source = a.get('source') or ''
             when = (a.get('time') or '')[:5]
             rel = a.get('relevance') or ''
-            summary = clean_summary(a.get('summary'))
             url = a.get('url') or ''
             repos = github_links(bodies.get(url, ''))
             meta = ' · '.join(x for x in (source, when, rel) if x)
+            num = f'{i:02d}'
+            title_html = (f'<a href="{html.escape(url)}" style="color:#111827;text-decoration:none;">'
+                          f'{html.escape(title)}</a>' if url else html.escape(title))
 
-            text_lines.append(f'{i}. {title} — {meta}')
-            if summary:
-                text_lines.append(f'   {summary}')
-            for repo in repos:
-                text_lines.append(f'   GitHub: {repo}')
-            if url:
-                text_lines.append(f'   {url}')
-
-            blocks.append(
-                '<tr><td style="padding:18px 28px 0;">'
-                f'<div style="font-size:15px;font-weight:600;color:#111827;line-height:1.55;">'
-                f'{i}. {html.escape(title)}</div>'
-                f'<div style="font-size:12px;color:#9aa3af;margin-top:5px;">{html.escape(meta)}</div>'
-                + (f'<div style="font-size:14px;line-height:1.75;color:#3f4652;margin-top:8px;">'
-                   f'{html.escape(summary)}</div>' if summary else '')
-                + ''.join(
-                    f'<div style="margin-top:8px;font-size:13px;">'
-                    f'<span style="color:#9aa3af;">GitHub </span>'
-                    f'<a href="{html.escape(repo)}" style="color:#0f766e;text-decoration:none;">'
-                    f'{html.escape(repo.replace("https://github.com/", "").rstrip("/"))}</a></div>'
-                    for repo in repos
+            # **分层**是这一版最重要的改动：110 篇如果每篇都占一块，读者根本没有入口。
+            # 高相关给完整卡片（摘要 + 仓库 + 链接），中相关只给一行摘要，
+            # 低相关压成一行标题 —— 每篇都还在，但视线有落点。
+            if rel == '高':
+                summary = clean_summary(a.get('summary'), 200)
+                text_lines.append(f'{num}. ★ {title} — {meta}')
+                if summary:
+                    text_lines.append(f'    {summary}')
+                for repo in repos:
+                    text_lines.append(f'    GitHub: {repo}')
+                if url:
+                    text_lines.append(f'    {url}')
+                blocks.append(
+                    '<tr><td style="padding:16px 28px 0;">'
+                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                    'style="background:#ffffff;border:1px solid #e8ebef;border-radius:12px;">'
+                    '<tr><td style="padding:16px 18px;">'
+                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                    f'<td width="26" valign="top"><span style="display:inline-block;width:24px;height:24px;'
+                    f'line-height:24px;text-align:center;border-radius:7px;background:{tint};color:{accent};'
+                    f'font-size:12px;font-weight:700;">{num}</span></td>'
+                    '<td valign="top">'
+                    f'<div style="font-size:15px;font-weight:600;color:#111827;line-height:1.55;">{title_html}</div>'
+                    f'<div style="font-size:11.5px;color:#9aa3af;margin-top:5px;">{html.escape(meta)}</div>'
+                    + (f'<div style="font-size:14px;line-height:1.8;color:#4b5563;margin-top:9px;">'
+                       f'{html.escape(summary)}</div>' if summary else '')
+                    + ''.join(
+                        f'<div style="margin-top:9px;font-size:12.5px;">'
+                        f'<a href="{html.escape(repo)}" style="color:{accent};text-decoration:none;">'
+                        f'&#9679; {html.escape(repo.replace("https://github.com/", "").rstrip("/"))}</a></div>'
+                        for repo in repos
+                    )
+                    + '</td></tr></table></td></tr></table></td></tr>'
                 )
-                + (f'<div style="margin-top:10px;"><a href="{html.escape(url)}" '
-                   'style="color:#2563eb;font-size:13px;text-decoration:none;">阅读原文 &rarr;</a></div>' if url else '')
-                + '<div style="border-top:1px solid #f1f5f9;margin-top:18px;"></div>'
-                '</td></tr>'
-            )
+            elif rel == '中':
+                summary = clean_summary(a.get('summary'), 80)
+                text_lines.append(f'{num}. {title} — {meta}')
+                if summary:
+                    text_lines.append(f'    {summary}')
+                blocks.append(
+                    '<tr><td style="padding:12px 28px 0;">'
+                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                    f'<td width="26" valign="top"><span style="display:inline-block;width:22px;height:22px;'
+                    f'line-height:22px;text-align:center;border-radius:6px;background:#f1f5f9;color:#94a3b8;'
+                    f'font-size:11px;font-weight:600;">{num}</span></td>'
+                    '<td valign="top">'
+                    f'<div style="font-size:14px;font-weight:600;color:#1f2937;line-height:1.5;">{title_html}</div>'
+                    f'<div style="font-size:11.5px;color:#9aa3af;margin-top:4px;">{html.escape(meta)}</div>'
+                    + (f'<div style="font-size:13px;line-height:1.7;color:#6b7280;margin-top:6px;">'
+                       f'{html.escape(summary)}</div>' if summary else '')
+                    + '</td></tr></table></td></tr>'
+                )
+            else:
+                text_lines.append(f'{num}. {title} — {meta}')
+                blocks.append(
+                    '<tr><td style="padding:7px 28px 0;">'
+                    f'<span style="font-size:11px;color:#c0c7d0;">{num}</span> '
+                    f'<span style="font-size:13px;color:#8a929c;">{title_html}</span>'
+                    f'<span style="font-size:11px;color:#c0c7d0;"> · {html.escape(source)}</span>'
+                    '</td></tr>'
+                )
         text_lines.append('')
 
     text_lines.append('完整版（含配图）在电脑上打开：')
