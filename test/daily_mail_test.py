@@ -55,5 +55,44 @@ class GithubLinkTests(unittest.TestCase):
         self.assertEqual(len(dm.github_links(body)), 3)
 
 
+class RenderSectionsTests(unittest.TestCase):
+    """**每个主题都必须真的出现在邮件里。**
+
+    2026-10-20 出过一次：`render` 里「主题分区」那一段缩进错位（掉到 `for topic` 循环外），
+    结果只有最后一个主题被渲染——邮件里只有学术、AI 整段消失，而且**不报错、篇数也对**
+    （因为 total 是另一个变量）。用户报的"新邮件只有学术没有 AI"就是这个。
+    """
+
+    def _article(self, title, topic_source='某号'):
+        return {'title': title, 'source': topic_source, 'time': '10:00', 'relevance': '中',
+                'url': 'https://mp.weixin.qq.com/s/x', 'summary': '【核心观点】摘要。', 'tags': []}
+
+    def test_two_topics_both_render(self):
+        groups = {
+            'AI': [self._article('AI 的文章甲'), self._article('AI 的文章乙')],
+            '学术': [self._article('学术的文章丙')],
+        }
+        body, page, total = dm.render('2026-10-18', groups, {}, {}, {})
+        self.assertEqual(total, 3)
+        self.assertIn('>AI<', page, 'AI 主题头必须在')
+        self.assertIn('>学术<', page, '学术主题头必须在')
+        for title in ('AI 的文章甲', 'AI 的文章乙', '学术的文章丙'):
+            self.assertIn(title, page, f'{title} 丢了')
+
+    def test_every_article_becomes_one_card(self):
+        groups = {'AI': [self._article(f'甲{i}') for i in range(5)],
+                  '学术': [self._article(f'乙{i}') for i in range(4)]}
+        body, page, total = dm.render('2026-10-18', groups, {}, {}, {})
+        self.assertEqual(page.count('border:1px solid #eef0f3'), 9,
+                         '卡片数必须等于篇数——少一张就说明有一篇没渲染')
+
+    def test_empty_topic_is_skipped_not_rendered(self):
+        groups = {'AI': [self._article('甲')], '学术': []}
+        body, page, total = dm.render('2026-10-18', groups, {}, {}, {})
+        self.assertIn('>AI<', page)
+        self.assertNotIn('>学术<', page)
+        self.assertEqual(total, 1)
+
+
 if __name__ == '__main__':
     unittest.main()

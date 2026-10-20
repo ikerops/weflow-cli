@@ -226,119 +226,119 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
             text_lines.append(digest)
         text_lines.append('')
 
-    # 主题分区：一条通栏色条 + 主题名，比一个小圆角标签更能"切开"版面。
-    # 档位名取自 `_utils.RELEVANCE_NAMES`：写死 `('高','中','低')` 会与判据层漂移，
-    # 而 `topic_taxonomy_test` 就是专门拦这件事的（它当场红过一次）。
-    from _utils import RELEVANCE_NAMES as _REL
-    hi, mid, lo = (sum(1 for a in items if a.get('relevance') == k) for k in (_REL[2], _REL[1], _REL[0]))
-    def pct(n):
-        return max(1, round(n * 100 / max(1, len(items))))
-    blocks.append(
-        '<tr><td style="padding:30px 28px 0;">'
-        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-        f'<td width="4" style="background:{accent};border-radius:2px;"></td>'
-        '<td style="padding-left:10px;">'
-        f'<span style="font-size:18px;font-weight:700;color:#111827;">{html.escape(topic)}</span>'
-        f'<span style="font-size:12px;color:#9aa3af;margin-left:8px;">{len(items)} 篇</span>'
-        '</td></tr></table>'
-        # 相关度比例条：不用看数字就知道今天"值得读的占多少"
-        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;">'
-        '<tr>'
-        f'<td width="{pct(hi)}%" height="7" style="background:{accent};border-radius:4px 0 0 4px;"></td>'
-        f'<td width="{pct(mid)}%" height="7" style="background:{tint};"></td>'
-        f'<td width="{pct(lo)}%" height="7" style="background:#eef1f4;border-radius:0 4px 4px 0;"></td>'
-        '</tr></table>'
-        f'<div style="font-size:11.5px;color:#9aa3af;margin-top:6px;">'
-        f'<span style="color:{accent};font-weight:600;">高 {hi}</span> · 中 {mid} · 低 {lo}</div>'
-        '</td></tr>'
-    )
-    if digest:
+        # 主题分区：一条通栏色条 + 主题名，比一个小圆角标签更能"切开"版面。
+        # 档位名取自 `_utils.RELEVANCE_NAMES`：写死 `('高','中','低')` 会与判据层漂移，
+        # 而 `topic_taxonomy_test` 就是专门拦这件事的（它当场红过一次）。
+        from _utils import RELEVANCE_NAMES as _REL
+        hi, mid, lo = (sum(1 for a in items if a.get('relevance') == k) for k in (_REL[2], _REL[1], _REL[0]))
+        def pct(n):
+            return max(1, round(n * 100 / max(1, len(items))))
         blocks.append(
-            '<tr><td style="padding:14px 28px 0;">'
-            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-            f'style="background:#f8fafc;border-left:3px solid {accent};border-radius:8px;">'
-            '<tr><td style="padding:14px 16px;font-size:14px;line-height:1.8;color:#3f4652;">'
-            f'{html.escape(digest)}</td></tr></table></td></tr>'
+            '<tr><td style="padding:30px 28px 0;">'
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+            f'<td width="4" style="background:{accent};border-radius:2px;"></td>'
+            '<td style="padding-left:10px;">'
+            f'<span style="font-size:18px;font-weight:700;color:#111827;">{html.escape(topic)}</span>'
+            f'<span style="font-size:12px;color:#9aa3af;margin-left:8px;">{len(items)} 篇</span>'
+            '</td></tr></table>'
+            # 相关度比例条：不用看数字就知道今天"值得读的占多少"
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;">'
+            '<tr>'
+            f'<td width="{pct(hi)}%" height="7" style="background:{accent};border-radius:4px 0 0 4px;"></td>'
+            f'<td width="{pct(mid)}%" height="7" style="background:{tint};"></td>'
+            f'<td width="{pct(lo)}%" height="7" style="background:#eef1f4;border-radius:0 4px 4px 0;"></td>'
+            '</tr></table>'
+            f'<div style="font-size:11.5px;color:#9aa3af;margin-top:6px;">'
+            f'<span style="color:{accent};font-weight:600;">高 {hi}</span> · 中 {mid} · 低 {lo}</div>'
+            '</td></tr>'
         )
-
-    # 主题内再分一次类：68 篇挤成一排没人看，分成 4-6 组后每一段都有名字。
-    section_clusters = (clusters or {}).get(topic) or [(topic, list(items))]
-    for ci, (cname, citems) in enumerate(section_clusters):
-        dot = PALETTE[ci % len(PALETTE)]
-        if len(section_clusters) > 1:
+        if digest:
             blocks.append(
-                '<tr><td style="padding:22px 28px 0;">'
-                f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
-                f'background:{dot};vertical-align:middle;"></span>'
-                f'<span style="font-size:13.5px;font-weight:700;color:#374151;margin-left:7px;">'
-                f'{html.escape(cname)}</span>'
-                f'<span style="font-size:11.5px;color:#b3bac4;margin-left:6px;">{len(citems)}</span>'
-                '</td></tr>'
-            )
-            text_lines.append(f'-- {cname}（{len(citems)}）--')
-
-        for a in citems:
-            i = items.index(a) + 1
-            title = a.get('title') or ''
-            source = a.get('source') or ''
-            when = (a.get('time') or '')[:5]
-            rel = a.get('relevance') or ''
-            url = a.get('url') or ''
-            repos = github_links(bodies.get(url, ''))
-            meta = ' · '.join(x for x in (source, when, rel) if x)
-            num = f'{i:02d}'
-            title_html = (f'<a href="{html.escape(url)}" style="color:#111827;text-decoration:none;">'
-                          f'{html.escape(title)}</a>' if url else html.escape(title))
-
-            # **颜色必须自己说明自己。** 上一版把序号徽章染成主题色来表示"高相关"，
-            # 但没有任何图例——用户看到截图的第一反应是"这边为什么有的是绿的"（2026-10-20）。
-            # 现在徽章统一成灰色，相关度改成 meta 行里一个**写着"高"的小色块**：
-            # 颜色解释自己，不需要图例。
-            if rel == _REL[2]:
-                summary = clean_summary(a.get('summary'), 190)
-                text_lines.append(f'{num}. ★ {title} — {meta}')
-            elif rel == _REL[1]:
-                summary = clean_summary(a.get('summary'), 120)
-                text_lines.append(f'{num}. {title} — {meta}')
-            else:
-                summary = ''
-                text_lines.append(f'{num}. {title} — {meta}')
-            if rel == _REL[2]:
-                rel_html = (f'<span style="display:inline-block;background:{accent};color:#ffffff;'
-                            f'font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:4px;">'
-                            f'{html.escape(rel)}</span>')
-            else:
-                rel_html = f'<span style="color:#b3bac4;">{html.escape(rel)}</span>' if rel else ''
-            meta_html = ' · '.join(x for x in (
-                html.escape(source), html.escape(when), rel_html) if x)
-            if summary:
-                text_lines.append(f'    {summary}')
-            for repo in repos:
-                text_lines.append(f'    GitHub: {repo}')
-            if url:
-                text_lines.append(f'    {url}')
-            blocks.append(
-                '<tr><td style="padding:10px 28px 0;">'
+                '<tr><td style="padding:14px 28px 0;">'
                 '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-                'style="background:#ffffff;border:1px solid #eef0f3;border-radius:12px;">'
-                '<tr><td style="padding:14px 16px;">'
-                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-                f'<td width="28" valign="top"><span style="display:inline-block;width:24px;height:24px;'
-                'line-height:24px;text-align:center;border-radius:7px;background:#f1f5f9;'
-                f'color:#94a3b8;font-size:11.5px;font-weight:700;">{num}</span></td>'
-                '<td valign="top">'
-                f'<div style="font-size:14.5px;font-weight:600;color:#111827;line-height:1.55;">{title_html}</div>'
-                f'<div style="font-size:11.5px;color:#9aa3af;margin-top:4px;">{meta_html}</div>'
-                + (f'<div style="font-size:13.5px;line-height:1.75;color:#4b5563;margin-top:8px;">'
-                   f'{html.escape(summary)}</div>' if summary else '')
-                + ''.join(
-                    f'<div style="margin-top:8px;font-size:12.5px;">'
-                    f'<a href="{html.escape(repo)}" style="color:{accent};text-decoration:none;">'
-                    f'&#9679; {html.escape(repo.replace("https://github.com/", "").rstrip("/"))}</a></div>'
-                    for repo in repos
-                )
-                + '</td></tr></table></td></tr></table></td></tr>'
+                f'style="background:#f8fafc;border-left:3px solid {accent};border-radius:8px;">'
+                '<tr><td style="padding:14px 16px;font-size:14px;line-height:1.8;color:#3f4652;">'
+                f'{html.escape(digest)}</td></tr></table></td></tr>'
             )
+
+        # 主题内再分一次类：68 篇挤成一排没人看，分成 4-6 组后每一段都有名字。
+        section_clusters = (clusters or {}).get(topic) or [(topic, list(items))]
+        for ci, (cname, citems) in enumerate(section_clusters):
+            dot = PALETTE[ci % len(PALETTE)]
+            if len(section_clusters) > 1:
+                blocks.append(
+                    '<tr><td style="padding:22px 28px 0;">'
+                    f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
+                    f'background:{dot};vertical-align:middle;"></span>'
+                    f'<span style="font-size:13.5px;font-weight:700;color:#374151;margin-left:7px;">'
+                    f'{html.escape(cname)}</span>'
+                    f'<span style="font-size:11.5px;color:#b3bac4;margin-left:6px;">{len(citems)}</span>'
+                    '</td></tr>'
+                )
+                text_lines.append(f'-- {cname}（{len(citems)}）--')
+
+            for a in citems:
+                i = items.index(a) + 1
+                title = a.get('title') or ''
+                source = a.get('source') or ''
+                when = (a.get('time') or '')[:5]
+                rel = a.get('relevance') or ''
+                url = a.get('url') or ''
+                repos = github_links(bodies.get(url, ''))
+                meta = ' · '.join(x for x in (source, when, rel) if x)
+                num = f'{i:02d}'
+                title_html = (f'<a href="{html.escape(url)}" style="color:#111827;text-decoration:none;">'
+                              f'{html.escape(title)}</a>' if url else html.escape(title))
+
+                # **颜色必须自己说明自己。** 上一版把序号徽章染成主题色来表示"高相关"，
+                # 但没有任何图例——用户看到截图的第一反应是"这边为什么有的是绿的"（2026-10-20）。
+                # 现在徽章统一成灰色，相关度改成 meta 行里一个**写着"高"的小色块**：
+                # 颜色解释自己，不需要图例。
+                if rel == _REL[2]:
+                    summary = clean_summary(a.get('summary'), 190)
+                    text_lines.append(f'{num}. ★ {title} — {meta}')
+                elif rel == _REL[1]:
+                    summary = clean_summary(a.get('summary'), 120)
+                    text_lines.append(f'{num}. {title} — {meta}')
+                else:
+                    summary = ''
+                    text_lines.append(f'{num}. {title} — {meta}')
+                if rel == _REL[2]:
+                    rel_html = (f'<span style="display:inline-block;background:{accent};color:#ffffff;'
+                                f'font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:4px;">'
+                                f'{html.escape(rel)}</span>')
+                else:
+                    rel_html = f'<span style="color:#b3bac4;">{html.escape(rel)}</span>' if rel else ''
+                meta_html = ' · '.join(x for x in (
+                    html.escape(source), html.escape(when), rel_html) if x)
+                if summary:
+                    text_lines.append(f'    {summary}')
+                for repo in repos:
+                    text_lines.append(f'    GitHub: {repo}')
+                if url:
+                    text_lines.append(f'    {url}')
+                blocks.append(
+                    '<tr><td style="padding:10px 28px 0;">'
+                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                    'style="background:#ffffff;border:1px solid #eef0f3;border-radius:12px;">'
+                    '<tr><td style="padding:14px 16px;">'
+                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                    f'<td width="28" valign="top"><span style="display:inline-block;width:24px;height:24px;'
+                    'line-height:24px;text-align:center;border-radius:7px;background:#f1f5f9;'
+                    f'color:#94a3b8;font-size:11.5px;font-weight:700;">{num}</span></td>'
+                    '<td valign="top">'
+                    f'<div style="font-size:14.5px;font-weight:600;color:#111827;line-height:1.55;">{title_html}</div>'
+                    f'<div style="font-size:11.5px;color:#9aa3af;margin-top:4px;">{meta_html}</div>'
+                    + (f'<div style="font-size:13.5px;line-height:1.75;color:#4b5563;margin-top:8px;">'
+                       f'{html.escape(summary)}</div>' if summary else '')
+                    + ''.join(
+                        f'<div style="margin-top:8px;font-size:12.5px;">'
+                        f'<a href="{html.escape(repo)}" style="color:{accent};text-decoration:none;">'
+                        f'&#9679; {html.escape(repo.replace("https://github.com/", "").rstrip("/"))}</a></div>'
+                        for repo in repos
+                    )
+                    + '</td></tr></table></td></tr></table></td></tr>'
+                )
         text_lines.append('')
 
     text_lines.append('完整版（含配图）在电脑上打开：')
