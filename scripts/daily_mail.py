@@ -31,7 +31,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from _utils import get_api_key, load_config  # noqa: E402
 
 ROOT = SCRIPT_DIR.parent
-DEFAULT_TOPICS = ('AI', '文学', '学术')
+DEFAULT_TOPICS = ('AI', '学术')
 SMTP_CONFIG = pathlib.Path(os.path.expanduser('~/.weflow-issue-watch.json'))
 
 
@@ -84,54 +84,96 @@ def topic_digest(topic: str, items, api_key: str) -> str:
 
 def render(date: str, groups, digests) -> tuple[str, str, int]:
     total = sum(len(v) for v in groups.values())
-    text_lines = [f'公众号日报 {date}', f'共 {total} 篇（AI / 文学 / 学术）', '']
-    rows = [f'<h1>公众号日报 {date}</h1>',
-            f'<p class="meta">共 {total} 篇 · AI / 文学 / 学术（新闻、政治、投资已略）</p>']
+    # 主题配色：AI 靛蓝、学术 青绿。用 table + inline style —— 邮件客户端会剥离
+    # `<style>` 与 class，class 选择器在 QQ / Gmail / 企业微信里表现不一致。
+    accents = {'AI': ('#4f46e5', '#eef2ff'), '学术': ('#0d9488', '#ecfdf5')}
+
+    text_lines = [f'公众号日报 {date}', f'共 {total} 篇', '']
+    blocks: list[str] = []
 
     for topic, items in groups.items():
         if not items:
             continue
+        accent, tint = accents.get(topic, ('#334155', '#f1f5f9'))
         text_lines.append(f'=== {topic}（{len(items)} 篇）===')
-        rows.append(f'<h2>{html.escape(topic)} <span class="count">{len(items)} 篇</span></h2>')
         digest = (digests or {}).get(topic) or ''
         if digest:
             text_lines.append(digest)
-            rows.append(f'<p class="digest">{html.escape(digest)}</p>')
         text_lines.append('')
+
+        blocks.append(
+            '<tr><td style="padding:26px 28px 0;">'
+            f'<span style="display:inline-block;background:{tint};color:{accent};'
+            'font-size:13px;font-weight:600;padding:5px 12px;border-radius:999px;">'
+            f'{html.escape(topic)} · {len(items)} 篇</span></td></tr>'
+        )
+        if digest:
+            blocks.append(
+                '<tr><td style="padding:12px 28px 0;">'
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                f'style="background:#f8fafc;border-left:3px solid {accent};border-radius:8px;">'
+                '<tr><td style="padding:14px 16px;font-size:14px;line-height:1.75;color:#3f4652;">'
+                f'{html.escape(digest)}</td></tr></table></td></tr>'
+            )
+
         for i, a in enumerate(items, 1):
             title = a.get('title') or ''
             source = a.get('source') or ''
-            t = (a.get('time') or '')[:5]
+            when = (a.get('time') or '')[:5]
+            rel = a.get('relevance') or ''
             summary = one_line(a.get('summary'))
             url = a.get('url') or ''
-            text_lines.append(f'{i}. {title} — {source} {t}')
+            meta = ' · '.join(x for x in (source, when, rel) if x)
+
+            text_lines.append(f'{i}. {title} — {meta}')
             if summary:
                 text_lines.append(f'   {summary}')
             if url:
                 text_lines.append(f'   {url}')
-            rows.append(
-                '<div class="item">'
-                f'<div class="t">{i}. {html.escape(title)}</div>'
-                f'<div class="s">{html.escape(source)} · {html.escape(t)} · {html.escape(a.get("relevance") or "")}</div>'
-                + (f'<div class="d">{html.escape(summary)}</div>' if summary else '')
-                + (f'<div class="u"><a href="{html.escape(url)}">原文</a></div>' if url else '')
-                + '</div>'
+
+            blocks.append(
+                '<tr><td style="padding:18px 28px 0;">'
+                f'<div style="font-size:15px;font-weight:600;color:#111827;line-height:1.55;">'
+                f'{i}. {html.escape(title)}</div>'
+                f'<div style="font-size:12px;color:#9aa3af;margin-top:5px;">{html.escape(meta)}</div>'
+                + (f'<div style="font-size:14px;line-height:1.75;color:#3f4652;margin-top:8px;">'
+                   f'{html.escape(summary)}</div>' if summary else '')
+                + (f'<div style="margin-top:10px;"><a href="{html.escape(url)}" '
+                   'style="color:#2563eb;font-size:13px;text-decoration:none;">阅读原文 &rarr;</a></div>' if url else '')
+                + '<div style="border-top:1px solid #f1f5f9;margin-top:18px;"></div>'
+                '</td></tr>'
             )
         text_lines.append('')
+
     text_lines.append('完整版（含配图）在电脑上打开：')
     text_lines.append(f'  weflow-cli daily-server --date {date} --open')
 
-    page = f"""<!doctype html><html><head><meta charset="utf-8">
-<style>
-body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;line-height:1.6;color:#222;max-width:760px;margin:0 auto;padding:16px}}
-h1{{font-size:20px;margin:0 0 4px}} h2{{font-size:17px;margin:28px 0 8px;padding-bottom:6px;border-bottom:1px solid #e5e5e5}}
-.meta{{color:#888;font-size:13px;margin:0 0 8px}} .count{{color:#999;font-size:13px;font-weight:400}}
-.digest{{background:#f7f7f9;padding:10px 12px;border-radius:6px;font-size:14px;color:#333}}
-.item{{margin:14px 0 16px}} .t{{font-weight:600}} .s{{color:#999;font-size:12px;margin:2px 0}}
-.d{{font-size:14px;color:#333;margin:4px 0}} .u a{{color:#0b6bcb;font-size:13px;text-decoration:none}}
-</style></head><body>
-{''.join(rows)}
-</body></html>"""
+    stats = ' · '.join(f'{t} {len(v)} 篇' for t, v in groups.items() if v)
+    page = (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>' + html.escape(f'公众号日报 {date}') + '</title></head>'
+        '<body style="margin:0;padding:0;background:#f4f5f7;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="background:#f4f5f7;"><tr><td align="center" style="padding:24px 12px;">'
+        '<table role="presentation" width="640" cellpadding="0" cellspacing="0" '
+        'style="width:100%;max-width:640px;background:#ffffff;border-radius:14px;'
+        'overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);">'
+        '<tr><td style="background:#111827;padding:26px 28px;">'
+        '<div style="font-size:12px;letter-spacing:.12em;color:#9ca3af;font-weight:600;">'
+        'WEFLOW · 公众号日报</div>'
+        f'<div style="font-size:26px;font-weight:700;color:#ffffff;margin-top:8px;">{html.escape(date)}</div>'
+        f'<div style="font-size:13px;color:#c7cbd1;margin-top:8px;">{html.escape(stats)}</div>'
+        '</td></tr>'
+        + ''.join(blocks)
+        + '<tr><td style="padding:22px 28px 28px;">'
+        '<div style="font-size:12px;color:#9aa3af;line-height:1.8;">'
+        '完整版（含配图）在电脑上打开：<br>'
+        '<span style="font-family:ui-monospace,Consolas,Menlo,monospace;color:#6b7280;">'
+        f'weflow-cli daily-server --date {html.escape(date)} --open</span>'
+        '</div></td></tr>'
+        '</table></td></tr></table></body></html>'
+    )
     return '\n'.join(text_lines), page, total
 
 
@@ -181,7 +223,7 @@ def main():
     digests = {t: topic_digest(t, items, api_key) for t, items in groups.items() if items}
 
     text_body, html_body, total = render(args.date, groups, digests)
-    subject = f'公众号日报 {args.date}：AI / 文学 / 学术 {total} 篇'
+    subject = f'公众号日报 {args.date}：{" / ".join(t for t in topics if groups.get(t))} {total} 篇'
 
     user, auth = smtp_settings()
     to = args.to or str(cfg.get('dailyMailTo') or '') or user
