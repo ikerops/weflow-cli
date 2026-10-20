@@ -290,22 +290,27 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
             title_html = (f'<a href="{html.escape(url)}" style="color:#111827;text-decoration:none;">'
                           f'{html.escape(title)}</a>' if url else html.escape(title))
 
-            # **视觉重量要一样，优先级只靠颜色和内容量体现。**
-            # 上一版让"高相关"带边框卡片、"中相关"是裸条目，结果同一个子类里
-            # 有个别条目格外突出（用户原话"一个子类下面有的怎么特别突出"）—— 分层
-            # 不该做成两种形状。现在全部是同样的卡片，只用徽章颜色与摘要长度区分。
+            # **颜色必须自己说明自己。** 上一版把序号徽章染成主题色来表示"高相关"，
+            # 但没有任何图例——用户看到截图的第一反应是"这边为什么有的是绿的"（2026-10-20）。
+            # 现在徽章统一成灰色，相关度改成 meta 行里一个**写着"高"的小色块**：
+            # 颜色解释自己，不需要图例。
             if rel == _REL[2]:
                 summary = clean_summary(a.get('summary'), 190)
-                badge_bg, badge_fg = accent, '#ffffff'
                 text_lines.append(f'{num}. ★ {title} — {meta}')
             elif rel == _REL[1]:
                 summary = clean_summary(a.get('summary'), 120)
-                badge_bg, badge_fg = '#f1f5f9', '#94a3b8'
                 text_lines.append(f'{num}. {title} — {meta}')
             else:
                 summary = ''
-                badge_bg, badge_fg = '#f8fafc', '#b9c1cb'
                 text_lines.append(f'{num}. {title} — {meta}')
+            if rel == _REL[2]:
+                rel_html = (f'<span style="display:inline-block;background:{accent};color:#ffffff;'
+                            f'font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:4px;">'
+                            f'{html.escape(rel)}</span>')
+            else:
+                rel_html = f'<span style="color:#b3bac4;">{html.escape(rel)}</span>' if rel else ''
+            meta_html = ' · '.join(x for x in (
+                html.escape(source), html.escape(when), rel_html) if x)
             if summary:
                 text_lines.append(f'    {summary}')
             for repo in repos:
@@ -319,11 +324,11 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
                 '<tr><td style="padding:14px 16px;">'
                 '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
                 f'<td width="28" valign="top"><span style="display:inline-block;width:24px;height:24px;'
-                f'line-height:24px;text-align:center;border-radius:7px;background:{badge_bg};'
-                f'color:{badge_fg};font-size:11.5px;font-weight:700;">{num}</span></td>'
+                'line-height:24px;text-align:center;border-radius:7px;background:#f1f5f9;'
+                f'color:#94a3b8;font-size:11.5px;font-weight:700;">{num}</span></td>'
                 '<td valign="top">'
                 f'<div style="font-size:14.5px;font-weight:600;color:#111827;line-height:1.55;">{title_html}</div>'
-                f'<div style="font-size:11.5px;color:#9aa3af;margin-top:4px;">{html.escape(meta)}</div>'
+                f'<div style="font-size:11.5px;color:#9aa3af;margin-top:4px;">{meta_html}</div>'
                 + (f'<div style="font-size:13.5px;line-height:1.75;color:#4b5563;margin-top:8px;">'
                    f'{html.escape(summary)}</div>' if summary else '')
                 + ''.join(
