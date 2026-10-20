@@ -227,7 +227,10 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
         text_lines.append('')
 
     # 主题分区：一条通栏色条 + 主题名，比一个小圆角标签更能"切开"版面。
-    hi, mid, lo = (sum(1 for a in items if a.get('relevance') == k) for k in ('高', '中', '低'))
+    # 档位名取自 `_utils.RELEVANCE_NAMES`：写死 `('高','中','低')` 会与判据层漂移，
+    # 而 `topic_taxonomy_test` 就是专门拦这件事的（它当场红过一次）。
+    from _utils import RELEVANCE_NAMES as _REL
+    hi, mid, lo = (sum(1 for a in items if a.get('relevance') == k) for k in (_REL[2], _REL[1], _REL[0]))
     def pct(n):
         return max(1, round(n * 100 / max(1, len(items))))
     blocks.append(
@@ -290,7 +293,7 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
             # **分层**是这一版最重要的改动：110 篇如果每篇都占一块，读者根本没有入口。
             # 高相关给完整卡片（摘要 + 仓库 + 链接），中相关只给一行摘要，
             # 低相关压成一行标题 —— 每篇都还在，但视线有落点。
-            if rel == '高':
+            if rel == _REL[2]:
                 summary = clean_summary(a.get('summary'), 200)
                 text_lines.append(f'{num}. ★ {title} — {meta}')
                 if summary:
@@ -321,7 +324,7 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
                     )
                     + '</td></tr></table></td></tr></table></td></tr>'
                 )
-            elif rel == '中':
+            elif rel == _REL[1]:
                 summary = clean_summary(a.get('summary'), 80)
                 text_lines.append(f'{num}. {title} — {meta}')
                 if summary:
