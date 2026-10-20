@@ -18,6 +18,7 @@ import html
 import json
 import os
 import pathlib
+import re
 import smtplib
 import sys
 from email.header import Header
@@ -57,18 +58,67 @@ def group_by_topic(articles, topics):
     return groups
 
 
-def one_line(summary: str, limit=220) -> str:
-    text = ' '.join((summary or '').split())
+GITHUB_RE = re.compile(r'https?://github\.com/[\w\-./]+', re.I)
+_TAG_RE = re.compile(r'【[^】]{1,12}】')
+
+
+def clean_summary(summary: str, limit=170) -> str:
+    """把 `【核心观点】…【关键细节】1. …；2. …` 压成**一句人话**。
+
+    邮件里那串标签是给机器分段的，对读者只是噪音：谁在手机上读日报，都不会去分辨
+    「核心观点」和「关键细节」的区别。所以只取【核心观点】那一段，标签一律去掉；
+    没有标签的老格式就整段压平。
+    """
+    text = summary or ''
+    m = re.search(r'【核心观点】(.+?)(?=【|$)', text, re.S)
+    if m:
+        text = m.group(1)
+    text = _TAG_RE.sub(' ', text)
+    text = ' '.join(text.split())
     if len(text) <= limit:
         return text
-    return text[:limit].rstrip() + '…'
+    return text[:limit].rstrip('，；、,. ') + '…'
+
+
+def body_index(date: str) -> dict:
+    """url -> 那篇文章的 md 全文（用来从正文里找 GitHub 链接）。
+
+    按 frontmatter 的 `url` 建索引，而不是按文件名：文件名是 `sanitize_filename` 拼的，
+    标题里有 `/`、`:` 或超长名字时会被改写，按名字匹配会静默丢文章。
+    """
+    index = {}
+    for md in (ROOT / 'output' / 'biz-daily' / date).glob('*/*.md'):
+        try:
+            text = md.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        m = re.search(r'^url:\s*"?([^"\n]+?)"?\s*$', text, re.M)
+        if m:
+            index[m.group(1)] = text
+    return index
+
+
+def github_links(text: str, limit=3) -> list:
+    if not text:
+        return []
+    seen, out = set(), []
+    for url in GITHUB_RE.findall(text):
+        url = url.rstrip('.,;)）')
+        key = url.rstrip('/').lower()
+        if key in seen or '/features' in key or '/pricing' in key:
+            continue
+        seen.add(key)
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def topic_digest(topic: str, items, api_key: str) -> str:
     """每个主题一次调用：让它读完全部标题+摘要，写一段综述。失败就返回空串（不影响发信）。"""
     if not api_key:
         return ''
-    lines = [f'- {a.get("title")}｜{a.get("source")}｜{one_line(a.get("summary"), 90)}' for a in items]
+    lines = [f'- {a.get("title")}｜{a.get("source")}｜{clean_summary(a.get("summary"), 90)}' for a in items]
     prompt = (
         f'下面是今天「{topic}」主题下 {len(items)} 篇公众号文章的标题与要点。\n'
         '请用中文写一段 150-250 字的综述：今天这个主题主要在讨论什么、有哪些值得注意的进展或分歧、'
@@ -82,7 +132,8 @@ def topic_digest(topic: str, items, api_key: str) -> str:
         return ''
 
 
-def render(date: str, groups, digests) -> tuple[str, str, int]:
+def render(date: str, groups, digests, bodies=None) -> tuple[str, str, int]:
+    bodies = bodies or {}
     total = sum(len(v) for v in groups.values())
     # 主题配色：AI 靛蓝、学术 青绿。用 table + inline style —— 邮件客户端会剥离
     # `<style>` 与 class，class 选择器在 QQ / Gmail / 企业微信里表现不一致。
@@ -121,13 +172,16 @@ def render(date: str, groups, digests) -> tuple[str, str, int]:
             source = a.get('source') or ''
             when = (a.get('time') or '')[:5]
             rel = a.get('relevance') or ''
-            summary = one_line(a.get('summary'))
+            summary = clean_summary(a.get('summary'))
             url = a.get('url') or ''
+            repos = github_links(bodies.get(url, ''))
             meta = ' · '.join(x for x in (source, when, rel) if x)
 
             text_lines.append(f'{i}. {title} — {meta}')
             if summary:
                 text_lines.append(f'   {summary}')
+            for repo in repos:
+                text_lines.append(f'   GitHub: {repo}')
             if url:
                 text_lines.append(f'   {url}')
 
@@ -138,6 +192,13 @@ def render(date: str, groups, digests) -> tuple[str, str, int]:
                 f'<div style="font-size:12px;color:#9aa3af;margin-top:5px;">{html.escape(meta)}</div>'
                 + (f'<div style="font-size:14px;line-height:1.75;color:#3f4652;margin-top:8px;">'
                    f'{html.escape(summary)}</div>' if summary else '')
+                + ''.join(
+                    f'<div style="margin-top:8px;font-size:13px;">'
+                    f'<span style="color:#9aa3af;">GitHub </span>'
+                    f'<a href="{html.escape(repo)}" style="color:#0f766e;text-decoration:none;">'
+                    f'{html.escape(repo.replace("https://github.com/", "").rstrip("/"))}</a></div>'
+                    for repo in repos
+                )
                 + (f'<div style="margin-top:10px;"><a href="{html.escape(url)}" '
                    'style="color:#2563eb;font-size:13px;text-decoration:none;">阅读原文 &rarr;</a></div>' if url else '')
                 + '<div style="border-top:1px solid #f1f5f9;margin-top:18px;"></div>'
@@ -222,7 +283,11 @@ def main():
     api_key = '' if args.no_digest else get_api_key(cfg)
     digests = {t: topic_digest(t, items, api_key) for t, items in groups.items() if items}
 
-    text_body, html_body, total = render(args.date, groups, digests)
+    bodies = body_index(args.date)
+    with_repo = sum(1 for a in articles if github_links(bodies.get(a.get('url'), '')))
+    print(f'正文含 GitHub 链接: {with_repo} 篇')
+
+    text_body, html_body, total = render(args.date, groups, digests, bodies)
     subject = f'公众号日报 {args.date}：{" / ".join(t for t in topics if groups.get(t))} {total} 篇'
 
     user, auth = smtp_settings()
