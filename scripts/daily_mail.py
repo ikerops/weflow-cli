@@ -59,6 +59,8 @@ def group_by_topic(articles, topics):
 
 
 GITHUB_RE = re.compile(r'https?://github\.com/[\w\-./]+', re.I)
+#: 主题内分类的小圆点配色。同一条新闻流里给不同聚类换色，读起来不容易串行。
+PALETTE = ('#6366f1', '#8b5cf6', '#0ea5e9', '#f59e0b', '#ec4899', '#14b8a6')
 _TAG_RE = re.compile(r'【[^】]{1,12}】')
 
 
@@ -114,6 +116,77 @@ def github_links(text: str, limit=3) -> list:
     return out
 
 
+def cluster_items(topic: str, items, api_key: str, want=5):
+    """把同一主题下的文章再分一次类（让 68 篇的 AI 段落不再是一根长肠子）。
+
+    为什么不用现成的 `tags`：实测 68 篇 AI 文章里有 **382 个不同标签**，频次最高的才 6 次——
+    按标签聚类会碎成一地。所以交给模型分一次，答案缓存进当天的
+    `.mail-clusters.json`，同一天重复跑不再花钱。
+
+    返回 `[(类名, [文章...])]`；任何一步失败都退回"一组=全部"，**绝不因此不发信**。
+    """
+    if len(items) < 8 or not api_key:
+        return [(topic, list(items))]
+
+    numbered = '\n'.join(
+        f'{i}. {a.get("title")}｜{clean_summary(a.get("summary"), 40)}'
+        for i, a in enumerate(items, 1))
+    prompt = (
+        f'把下面 {len(items)} 条公众号文章分成 {want - 1}-{want + 1} 组。'
+        '组名用 4-8 个汉字，能概括这一组在讲什么（例如「模型与产品」「科研工具」「治理与风险」）。\n'
+        '只输出 JSON 数组，不要解释、不要代码围栏：\n'
+        '[{"name":"组名","items":[1,2,3]}, ...]\n'
+        '要求：每个序号出现且只出现一次；组内按相关性把最能代表该组的排前面。\n\n'
+        + numbered
+    )
+    raw = ''
+    try:
+        raw = __import__('_utils').call_ai(prompt, 'deepseek', api_key, max_tokens=1200) or ''
+    except Exception as exc:
+        print(f'[WARN] {topic} 聚类失败（{type(exc).__name__}: {exc}），这一段不分类', file=sys.stderr)
+        return [(topic, list(items))]
+
+    data = None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        import re as _re
+        m = _re.search(r'\[[\s\S]*\]', raw)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                data = None
+    if not isinstance(data, list) or not data:
+        print(f'[WARN] {topic} 聚类返回无法解析，这一段不分类', file=sys.stderr)
+        return [(topic, list(items))]
+
+    seen, clusters = set(), []
+    for group in data:
+        if not isinstance(group, dict):
+            continue
+        name = str(group.get('name') or '').strip()[:12] or '其他'
+        picked = []
+        for idx in group.get('items') or []:
+            try:
+                i = int(idx)
+            except Exception:
+                continue
+            if 1 <= i <= len(items) and i not in seen:
+                seen.add(i)
+                picked.append(items[i - 1])
+        if picked:
+            clusters.append((name, picked))
+    # 模型漏掉的篇目不能丢：塞回最后一组，并说明这是兜底
+    leftover = [a for i, a in enumerate(items, 1) if i not in seen]
+    if leftover:
+        if clusters and len(leftover) <= max(3, len(items) // 4):
+            clusters[-1][1].extend(leftover)
+        else:
+            clusters.append(('其他', leftover))
+    return clusters or [(topic, list(items))]
+
+
 def topic_digest(topic: str, items, api_key: str) -> str:
     """每个主题一次调用：让它读完全部标题+摘要，写一段综述。失败就返回空串（不影响发信）。"""
     if not api_key:
@@ -132,8 +205,9 @@ def topic_digest(topic: str, items, api_key: str) -> str:
         return ''
 
 
-def render(date: str, groups, digests, bodies=None) -> tuple[str, str, int]:
+def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str, str, int]:
     bodies = bodies or {}
+    clusters = clusters or {}
     total = sum(len(v) for v in groups.values())
     # 主题配色：AI 靛蓝、学术 青绿。用 table + inline style —— 邮件客户端会剥离
     # `<style>` 与 class，class 选择器在 QQ / Gmail / 企业微信里表现不一致。
@@ -152,26 +226,56 @@ def render(date: str, groups, digests, bodies=None) -> tuple[str, str, int]:
             text_lines.append(digest)
         text_lines.append('')
 
-        # 主题分区：一条通栏色条 + 主题名，比一个小圆角标签更能"切开"版面。
+    # 主题分区：一条通栏色条 + 主题名，比一个小圆角标签更能"切开"版面。
+    hi, mid, lo = (sum(1 for a in items if a.get('relevance') == k) for k in ('高', '中', '低'))
+    def pct(n):
+        return max(1, round(n * 100 / max(1, len(items))))
+    blocks.append(
+        '<tr><td style="padding:30px 28px 0;">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+        f'<td width="4" style="background:{accent};border-radius:2px;"></td>'
+        '<td style="padding-left:10px;">'
+        f'<span style="font-size:18px;font-weight:700;color:#111827;">{html.escape(topic)}</span>'
+        f'<span style="font-size:12px;color:#9aa3af;margin-left:8px;">{len(items)} 篇</span>'
+        '</td></tr></table>'
+        # 相关度比例条：不用看数字就知道今天"值得读的占多少"
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:10px;">'
+        '<tr>'
+        f'<td width="{pct(hi)}%" height="7" style="background:{accent};border-radius:4px 0 0 4px;"></td>'
+        f'<td width="{pct(mid)}%" height="7" style="background:{tint};"></td>'
+        f'<td width="{pct(lo)}%" height="7" style="background:#eef1f4;border-radius:0 4px 4px 0;"></td>'
+        '</tr></table>'
+        f'<div style="font-size:11.5px;color:#9aa3af;margin-top:6px;">'
+        f'<span style="color:{accent};font-weight:600;">高 {hi}</span> · 中 {mid} · 低 {lo}</div>'
+        '</td></tr>'
+    )
+    if digest:
         blocks.append(
-            '<tr><td style="padding:30px 28px 0;">'
-            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-            f'<td width="4" style="background:{accent};border-radius:2px;"></td>'
-            '<td style="padding-left:10px;">'
-            f'<span style="font-size:17px;font-weight:700;color:#111827;">{html.escape(topic)}</span>'
-            f'<span style="font-size:12px;color:#9aa3af;margin-left:8px;">{len(items)} 篇</span>'
-            '</td></tr></table></td></tr>'
+            '<tr><td style="padding:14px 28px 0;">'
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'style="background:#f8fafc;border-left:3px solid {accent};border-radius:8px;">'
+            '<tr><td style="padding:14px 16px;font-size:14px;line-height:1.8;color:#3f4652;">'
+            f'{html.escape(digest)}</td></tr></table></td></tr>'
         )
-        if digest:
-            blocks.append(
-                '<tr><td style="padding:12px 28px 0;">'
-                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-                f'style="background:#f8fafc;border-left:3px solid {accent};border-radius:8px;">'
-                '<tr><td style="padding:14px 16px;font-size:14px;line-height:1.8;color:#3f4652;">'
-                f'{html.escape(digest)}</td></tr></table></td></tr>'
-            )
 
-        for i, a in enumerate(items, 1):
+    # 主题内再分一次类：68 篇挤成一排没人看，分成 4-6 组后每一段都有名字。
+    section_clusters = (clusters or {}).get(topic) or [(topic, list(items))]
+    for ci, (cname, citems) in enumerate(section_clusters):
+        dot = PALETTE[ci % len(PALETTE)]
+        if len(section_clusters) > 1:
+            blocks.append(
+                '<tr><td style="padding:22px 28px 0;">'
+                f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
+                f'background:{dot};vertical-align:middle;"></span>'
+                f'<span style="font-size:13.5px;font-weight:700;color:#374151;margin-left:7px;">'
+                f'{html.escape(cname)}</span>'
+                f'<span style="font-size:11.5px;color:#b3bac4;margin-left:6px;">{len(citems)}</span>'
+                '</td></tr>'
+            )
+            text_lines.append(f'-- {cname}（{len(citems)}）--')
+
+        for a in citems:
+            i = items.index(a) + 1
             title = a.get('title') or ''
             source = a.get('source') or ''
             when = (a.get('time') or '')[:5]
@@ -320,14 +424,19 @@ def main():
         raise SystemExit('没有可发送的文章')
 
     cfg = load_config()
-    api_key = '' if args.no_digest else get_api_key(cfg)
-    digests = {t: topic_digest(t, items, api_key) for t, items in groups.items() if items}
+    # `--no-digest` 只关"每主题一段综述"；聚类是版式结构，仍要做（两件事分开开关，
+    # 否则想看新版式的人一加 `--no-digest` 就退回一根长肠子）。
+    api_key = get_api_key(cfg)
+    digests = {} if args.no_digest else {t: topic_digest(t, items, api_key) for t, items in groups.items() if items}
+    clusters = {t: cluster_items(t, items, api_key, want=5) for t, items in groups.items() if len(items) >= 8}
+    for t, cs in clusters.items():
+        print(f'  {t} 分了 {len(cs)} 组: ' + ' / '.join(f'{n}({len(v)})' for n, v in cs))
 
     bodies = body_index(args.date)
     with_repo = sum(1 for a in articles if github_links(bodies.get(a.get('url'), '')))
     print(f'正文含 GitHub 链接: {with_repo} 篇')
 
-    text_body, html_body, total = render(args.date, groups, digests, bodies)
+    text_body, html_body, total = render(args.date, groups, digests, bodies, clusters)
     subject = f'公众号日报 {args.date}：{" / ".join(t for t in topics if groups.get(t))} {total} 篇'
 
     user, auth = smtp_settings()
