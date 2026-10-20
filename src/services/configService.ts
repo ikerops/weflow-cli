@@ -97,6 +97,8 @@ interface CliConfig {
   /** 不在日报里出现的主题，逗号分隔（如 新闻,投资）；展示层开关，改它不用重抓 */
   dailyExcludeTopics: string
   dailyAiEnabled: string
+  /** 日报邮件的收件人（`daily --email` 与定时任务用）；空则发给 SMTP 账号自己 */
+  dailyMailTo?: string
 }
 
 export interface ListEntry {

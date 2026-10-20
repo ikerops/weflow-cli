@@ -24,6 +24,8 @@ NOT_FROM_WEFLOW_CONFIG = {
     'messageDatabase': 'check --json 的输出，不是配置文件',
     # watch_issues 有它自己的配置文件（见该脚本 docstring）。
     'smtp_auth': 'watch_issues 自己的配置文件',
+    # daily_mail 也从同一份 `~/.weflow-issue-watch.json` 读发信账号，不是 CLI 配置。
+    'smtp_user': 'daily_mail / watch_issues 自己的配置文件',
     # 这两个被三个脚本读，但**没有任何东西写它们**——所以那条分支永远走不到，
     # 实际生效的是"从 passphrase 派生"。记在这里而不是假装它可用。
     'bizKey': '只被读、没人写；实际走的是从 passphrase 派生',
