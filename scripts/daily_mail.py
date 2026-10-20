@@ -290,67 +290,50 @@ def render(date: str, groups, digests, bodies=None, clusters=None) -> tuple[str,
             title_html = (f'<a href="{html.escape(url)}" style="color:#111827;text-decoration:none;">'
                           f'{html.escape(title)}</a>' if url else html.escape(title))
 
-            # **分层**是这一版最重要的改动：110 篇如果每篇都占一块，读者根本没有入口。
-            # 高相关给完整卡片（摘要 + 仓库 + 链接），中相关只给一行摘要，
-            # 低相关压成一行标题 —— 每篇都还在，但视线有落点。
+            # **视觉重量要一样，优先级只靠颜色和内容量体现。**
+            # 上一版让"高相关"带边框卡片、"中相关"是裸条目，结果同一个子类里
+            # 有个别条目格外突出（用户原话"一个子类下面有的怎么特别突出"）—— 分层
+            # 不该做成两种形状。现在全部是同样的卡片，只用徽章颜色与摘要长度区分。
             if rel == _REL[2]:
-                summary = clean_summary(a.get('summary'), 200)
+                summary = clean_summary(a.get('summary'), 190)
+                badge_bg, badge_fg = accent, '#ffffff'
                 text_lines.append(f'{num}. ★ {title} — {meta}')
-                if summary:
-                    text_lines.append(f'    {summary}')
-                for repo in repos:
-                    text_lines.append(f'    GitHub: {repo}')
-                if url:
-                    text_lines.append(f'    {url}')
-                blocks.append(
-                    '<tr><td style="padding:16px 28px 0;">'
-                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-                    'style="background:#ffffff;border:1px solid #e8ebef;border-radius:12px;">'
-                    '<tr><td style="padding:16px 18px;">'
-                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-                    f'<td width="26" valign="top"><span style="display:inline-block;width:24px;height:24px;'
-                    f'line-height:24px;text-align:center;border-radius:7px;background:{tint};color:{accent};'
-                    f'font-size:12px;font-weight:700;">{num}</span></td>'
-                    '<td valign="top">'
-                    f'<div style="font-size:15px;font-weight:600;color:#111827;line-height:1.55;">{title_html}</div>'
-                    f'<div style="font-size:11.5px;color:#9aa3af;margin-top:5px;">{html.escape(meta)}</div>'
-                    + (f'<div style="font-size:14px;line-height:1.8;color:#4b5563;margin-top:9px;">'
-                       f'{html.escape(summary)}</div>' if summary else '')
-                    + ''.join(
-                        f'<div style="margin-top:9px;font-size:12.5px;">'
-                        f'<a href="{html.escape(repo)}" style="color:{accent};text-decoration:none;">'
-                        f'&#9679; {html.escape(repo.replace("https://github.com/", "").rstrip("/"))}</a></div>'
-                        for repo in repos
-                    )
-                    + '</td></tr></table></td></tr></table></td></tr>'
-                )
             elif rel == _REL[1]:
-                summary = clean_summary(a.get('summary'), 80)
+                summary = clean_summary(a.get('summary'), 120)
+                badge_bg, badge_fg = '#f1f5f9', '#94a3b8'
                 text_lines.append(f'{num}. {title} — {meta}')
-                if summary:
-                    text_lines.append(f'    {summary}')
-                blocks.append(
-                    '<tr><td style="padding:12px 28px 0;">'
-                    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
-                    f'<td width="26" valign="top"><span style="display:inline-block;width:22px;height:22px;'
-                    f'line-height:22px;text-align:center;border-radius:6px;background:#f1f5f9;color:#94a3b8;'
-                    f'font-size:11px;font-weight:600;">{num}</span></td>'
-                    '<td valign="top">'
-                    f'<div style="font-size:14px;font-weight:600;color:#1f2937;line-height:1.5;">{title_html}</div>'
-                    f'<div style="font-size:11.5px;color:#9aa3af;margin-top:4px;">{html.escape(meta)}</div>'
-                    + (f'<div style="font-size:13px;line-height:1.7;color:#6b7280;margin-top:6px;">'
-                       f'{html.escape(summary)}</div>' if summary else '')
-                    + '</td></tr></table></td></tr>'
-                )
             else:
+                summary = ''
+                badge_bg, badge_fg = '#f8fafc', '#b9c1cb'
                 text_lines.append(f'{num}. {title} — {meta}')
-                blocks.append(
-                    '<tr><td style="padding:7px 28px 0;">'
-                    f'<span style="font-size:11px;color:#c0c7d0;">{num}</span> '
-                    f'<span style="font-size:13px;color:#8a929c;">{title_html}</span>'
-                    f'<span style="font-size:11px;color:#c0c7d0;"> · {html.escape(source)}</span>'
-                    '</td></tr>'
+            if summary:
+                text_lines.append(f'    {summary}')
+            for repo in repos:
+                text_lines.append(f'    GitHub: {repo}')
+            if url:
+                text_lines.append(f'    {url}')
+            blocks.append(
+                '<tr><td style="padding:10px 28px 0;">'
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                'style="background:#ffffff;border:1px solid #eef0f3;border-radius:12px;">'
+                '<tr><td style="padding:14px 16px;">'
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>'
+                f'<td width="28" valign="top"><span style="display:inline-block;width:24px;height:24px;'
+                f'line-height:24px;text-align:center;border-radius:7px;background:{badge_bg};'
+                f'color:{badge_fg};font-size:11.5px;font-weight:700;">{num}</span></td>'
+                '<td valign="top">'
+                f'<div style="font-size:14.5px;font-weight:600;color:#111827;line-height:1.55;">{title_html}</div>'
+                f'<div style="font-size:11.5px;color:#9aa3af;margin-top:4px;">{html.escape(meta)}</div>'
+                + (f'<div style="font-size:13.5px;line-height:1.75;color:#4b5563;margin-top:8px;">'
+                   f'{html.escape(summary)}</div>' if summary else '')
+                + ''.join(
+                    f'<div style="margin-top:8px;font-size:12.5px;">'
+                    f'<a href="{html.escape(repo)}" style="color:{accent};text-decoration:none;">'
+                    f'&#9679; {html.escape(repo.replace("https://github.com/", "").rstrip("/"))}</a></div>'
+                    for repo in repos
                 )
+                + '</td></tr></table></td></tr></table></td></tr>'
+            )
         text_lines.append('')
 
     text_lines.append('完整版（含配图）在电脑上打开：')
